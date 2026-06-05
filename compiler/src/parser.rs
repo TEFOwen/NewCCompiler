@@ -12,35 +12,35 @@ pub enum ParserError {
     EndOfTokenStream,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Program(pub FuncDef);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FuncDef {
     pub name: String,
     pub body: Vec<BlockItem>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BlockItem {
     Statement(Statement),
     Declaration(Declaration),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Declaration {
     pub identifier: String,
     pub initialiser: Option<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Statement {
     Return(Expression),
     Expression(Expression),
     Null,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expression {
     Factor(Factor),
     BinaryOp {
@@ -77,7 +77,13 @@ pub enum BinaryOperator {
     GreaterEqual,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Associativity {
+    LeftToRight,
+    RightToLeft,
+}
+
+#[derive(Debug, Clone)]
 pub enum Factor {
     Constant(u32),
     Var(String),
@@ -85,7 +91,7 @@ pub enum Factor {
     Paren(Box<Expression>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOperator {
     Complement,
     Negate,
@@ -243,11 +249,11 @@ impl Expression {
                 unreachable!()
             };
 
-            if op == Symbol::Equal {
+            if Self::associativity(op) == Associativity::RightToLeft {
                 let right = Self::parse_min_prec(tokens, Self::get_precedence(op).unwrap())?;
                 left = Expression::Assignment {
-                    left: Box::new(left),
-                    right: Box::new(right),
+                    left: Box::new(left.clone()),
+                    right: Box::new(Self::op_to_assignment(op, left, right)),
                 };
             } else {
                 let right = Self::parse_min_prec(tokens, Self::get_precedence(op).unwrap() + 1)?;
@@ -296,8 +302,92 @@ impl Expression {
             Symbol::Bar => Some(15),
             Symbol::DoubleAmp => Some(10),
             Symbol::DoubleBar => Some(5),
-            Symbol::Equal => Some(1),
+            Symbol::Equal
+            | Symbol::PlusEqual
+            | Symbol::MinusEqual
+            | Symbol::AsteriskEqual
+            | Symbol::SlashEqual
+            | Symbol::PercentEqual
+            | Symbol::AmpersandEqual
+            | Symbol::BarEqual
+            | Symbol::HatEqual
+            | Symbol::DoubleLtEqual
+            | Symbol::DoubleGtEqual => Some(1),
             _ => None,
+        }
+    }
+
+    fn associativity(op: Symbol) -> Associativity {
+        match op {
+            Symbol::Equal
+            | Symbol::PlusEqual
+            | Symbol::MinusEqual
+            | Symbol::AsteriskEqual
+            | Symbol::SlashEqual
+            | Symbol::PercentEqual
+            | Symbol::AmpersandEqual
+            | Symbol::BarEqual
+            | Symbol::HatEqual
+            | Symbol::DoubleLtEqual
+            | Symbol::DoubleGtEqual => Associativity::RightToLeft,
+            _ => Associativity::LeftToRight,
+        }
+    }
+
+    fn op_to_assignment(op: Symbol, left: Expression, right: Expression) -> Expression {
+        match op {
+            Symbol::Equal => right,
+            Symbol::PlusEqual => Expression::BinaryOp {
+                op: BinaryOperator::Add,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            Symbol::MinusEqual => Expression::BinaryOp {
+                op: BinaryOperator::Subtract,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            Symbol::AsteriskEqual => Expression::BinaryOp {
+                op: BinaryOperator::Multiply,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            Symbol::SlashEqual => Expression::BinaryOp {
+                op: BinaryOperator::Divide,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            Symbol::PercentEqual => Expression::BinaryOp {
+                op: BinaryOperator::Remainder,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            Symbol::DoubleLtEqual => Expression::BinaryOp {
+                op: BinaryOperator::LeftShift,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            Symbol::DoubleGtEqual => Expression::BinaryOp {
+                op: BinaryOperator::RightShift,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            Symbol::AmpersandEqual => Expression::BinaryOp {
+                op: BinaryOperator::BitwiseAnd,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            Symbol::BarEqual => Expression::BinaryOp {
+                op: BinaryOperator::BitwiseOr,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            Symbol::HatEqual => Expression::BinaryOp {
+                op: BinaryOperator::BitwiseXor,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            _ => unreachable!(),
         }
     }
 }

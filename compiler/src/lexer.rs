@@ -49,11 +49,13 @@ impl TryFrom<&String> for Keyword {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Symbol {
-    OpenParen,    // (
-    CloseParen,   // )
-    OpenBrace,    // {
-    CloseBrace,   // }
-    Semicolon,    // ;
+    OpenParen,  // (
+    CloseParen, // )
+    OpenBrace,  // {
+    CloseBrace, // }
+    Semicolon,  // ;
+
+    Exclamation,  // !
     Tilde,        // ~
     Hyphen,       // -
     DoubleHyphen, // --
@@ -64,18 +66,29 @@ pub enum Symbol {
     Ampersand,    // &
     Bar,          // |
     Hat,          // ^
-    LessThan,     // <
-    GreaterThan,  // >
     DoubleLt,     // <<
     DoubleGt,     // >>
-    Exclamation,  // !
+
     DoubleAmp,    // &&
     DoubleBar,    // ||
     Equal,        // =
     DoubleEqual,  // ==
     NotEqual,     // !=
+    LessThan,     // <
+    GreaterThan,  // >
     LessEqual,    // <=
     GreaterEqual, // >=
+
+    PlusEqual,      // +=
+    MinusEqual,     // -=
+    AsteriskEqual,  // *=
+    SlashEqual,     // /=
+    PercentEqual,   // %=
+    DoubleLtEqual,  // <<=
+    DoubleGtEqual,  // >>=
+    AmpersandEqual, // &=
+    BarEqual,       // |=
+    HatEqual,       // ^=
 }
 
 #[derive(Debug, Clone)]
@@ -197,14 +210,50 @@ where
                             chars.next();
                             column_number += 1;
                             Symbol::DoubleHyphen
+                        } else if matches!(chars.peek(), Some(&'=')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::MinusEqual
                         } else {
                             Symbol::Hyphen
                         }
                     }
-                    '+' => Symbol::Plus,
-                    '*' => Symbol::Asterisk,
-                    '/' => Symbol::Slash,
-                    '%' => Symbol::Percent,
+                    '+' => {
+                        if matches!(chars.peek(), Some(&'=')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::PlusEqual
+                        } else {
+                            Symbol::Plus
+                        }
+                    }
+                    '*' => {
+                        if matches!(chars.peek(), Some(&'=')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::AsteriskEqual
+                        } else {
+                            Symbol::Asterisk
+                        }
+                    }
+                    '/' => {
+                        if matches!(chars.peek(), Some(&'=')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::SlashEqual
+                        } else {
+                            Symbol::Slash
+                        }
+                    }
+                    '%' => {
+                        if matches!(chars.peek(), Some(&'=')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::PercentEqual
+                        } else {
+                            Symbol::Percent
+                        }
+                    }
                     '=' => {
                         if matches!(chars.peek(), Some(&'=')) {
                             chars.next();
@@ -228,6 +277,10 @@ where
                             chars.next();
                             column_number += 1;
                             Symbol::DoubleAmp
+                        } else if matches!(chars.peek(), Some(&'=')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::AmpersandEqual
                         } else {
                             Symbol::Ampersand
                         }
@@ -237,16 +290,34 @@ where
                             chars.next();
                             column_number += 1;
                             Symbol::DoubleBar
+                        } else if matches!(chars.peek(), Some(&'=')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::BarEqual
                         } else {
                             Symbol::Bar
                         }
                     }
-                    '^' => Symbol::Hat,
+                    '^' => {
+                        if matches!(chars.peek(), Some(&'=')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::HatEqual
+                        } else {
+                            Symbol::Hat
+                        }
+                    }
                     '<' => {
                         if matches!(chars.peek(), Some(&'<')) {
                             chars.next();
                             column_number += 1;
-                            Symbol::DoubleLt
+                            if matches!(chars.peek(), Some(&'=')) {
+                                chars.next();
+                                column_number += 1;
+                                Symbol::DoubleLtEqual
+                            } else {
+                                Symbol::DoubleLt
+                            }
                         } else if matches!(chars.peek(), Some(&'=')) {
                             chars.next();
                             column_number += 1;
@@ -259,7 +330,13 @@ where
                         if matches!(chars.peek(), Some(&'>')) {
                             chars.next();
                             column_number += 1;
-                            Symbol::DoubleGt
+                            if matches!(chars.peek(), Some(&'=')) {
+                                chars.next();
+                                column_number += 1;
+                                Symbol::DoubleGtEqual
+                            } else {
+                                Symbol::DoubleGt
+                            }
                         } else if matches!(chars.peek(), Some(&'=')) {
                             chars.next();
                             column_number += 1;
