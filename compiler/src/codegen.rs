@@ -19,7 +19,7 @@ pub enum Instruction {
         dst: Operand,
     },
     UnaryOp {
-        operator: parser::UnaryOperator,
+        operator: UnaryOperator,
         operand: Operand,
     },
     BinaryOp {
@@ -27,16 +27,35 @@ pub enum Instruction {
         src: Operand,
         dst: Operand,
     },
+    Cmp {
+        val1: Operand,
+        val2: Operand,
+    },
     Shift {
         left: bool,
+        shift: Operand,
         val: Operand,
     },
     Idiv(Operand),
     Cdq,
+    Jmp(String),
+    JmpCC(ConditionCode, String),
+    SetCC(ConditionCode, Operand),
+    Label(String),
     AllocateStack {
         size: usize,
     },
     Return,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConditionCode {
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +66,12 @@ pub enum BinaryOperator {
     BitAnd,
     BitOr,
     BitXor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOperator {
+    Complement,
+    Negate,
 }
 
 #[derive(Debug)]
@@ -108,13 +133,28 @@ impl ToAssembly for tacky::Instruction {
                 },
                 Instruction::Return,
             ],
+            tacky::Instruction::UnaryOp {
+                op: parser::UnaryOperator::LogicalNot,
+                src,
+                dst,
+            } => vec![
+                Instruction::Cmp {
+                    val1: Operand::Immediate(0),
+                    val2: src.to_assembly(),
+                },
+                Instruction::Move {
+                    src: Operand::Immediate(0),
+                    dst: dst.clone().to_assembly(),
+                },
+                Instruction::SetCC(ConditionCode::Equal, dst.to_assembly()),
+            ],
             tacky::Instruction::UnaryOp { op, src, dst } => vec![
                 Instruction::Move {
                     src: src.to_assembly(),
                     dst: dst.clone().to_assembly(),
                 },
                 Instruction::UnaryOp {
-                    operator: op,
+                    operator: UnaryOperator::try_from(op).unwrap(),
                     operand: dst.to_assembly(),
                 },
             ],
@@ -124,12 +164,12 @@ impl ToAssembly for tacky::Instruction {
                 val2,
                 dst,
             } => match op {
-                parser::BinaryOperator::Add
-                | parser::BinaryOperator::Subtract
-                | parser::BinaryOperator::Multiply
-                | parser::BinaryOperator::BitwiseAnd
-                | parser::BinaryOperator::BitwiseOr
-                | parser::BinaryOperator::BitwiseXor => vec![
+                tacky::BinaryOperator::Add
+                | tacky::BinaryOperator::Subtract
+                | tacky::BinaryOperator::Multiply
+                | tacky::BinaryOperator::BitwiseAnd
+                | tacky::BinaryOperator::BitwiseOr
+                | tacky::BinaryOperator::BitwiseXor => vec![
                     Instruction::Move {
                         src: val1.to_assembly(),
                         dst: dst.clone().to_assembly(),
@@ -140,23 +180,20 @@ impl ToAssembly for tacky::Instruction {
                         dst: dst.to_assembly(),
                     },
                 ],
-                parser::BinaryOperator::LeftShift | parser::BinaryOperator::RightShift => {
+                tacky::BinaryOperator::LeftShift | tacky::BinaryOperator::RightShift => {
                     vec![
                         Instruction::Move {
                             src: val1.to_assembly(),
                             dst: dst.clone().to_assembly(),
                         },
-                        Instruction::Move {
-                            src: val2.to_assembly(),
-                            dst: Operand::Register(Register::CX),
-                        },
                         Instruction::Shift {
-                            left: matches!(op, parser::BinaryOperator::LeftShift),
+                            left: matches!(op, tacky::BinaryOperator::LeftShift),
                             val: dst.to_assembly(),
+                            shift: val2.to_assembly(),
                         },
                     ]
                 }
-                parser::BinaryOperator::Divide | parser::BinaryOperator::Remainder => {
+                tacky::BinaryOperator::Divide | tacky::BinaryOperator::Remainder => {
                     vec![
                         Instruction::Move {
                             src: val1.to_assembly(),
@@ -165,7 +202,7 @@ impl ToAssembly for tacky::Instruction {
                         Instruction::Cdq,
                         Instruction::Idiv(val2.to_assembly()),
                         Instruction::Move {
-                            src: if op == parser::BinaryOperator::Divide {
+                            src: if op == tacky::BinaryOperator::Divide {
                                 Operand::Register(Register::AX)
                             } else {
                                 Operand::Register(Register::DX)
@@ -174,26 +211,100 @@ impl ToAssembly for tacky::Instruction {
                         },
                     ]
                 }
+                op => {
+                    vec![
+                        Instruction::Cmp {
+                            val1: val2.to_assembly(),
+                            val2: val1.to_assembly(),
+                        },
+                        Instruction::Move {
+                            src: Operand::Immediate(0),
+                            dst: dst.clone().to_assembly(),
+                        },
+                        Instruction::SetCC(
+                            ConditionCode::try_from(op).expect("Invalid condition code"),
+                            dst.to_assembly(),
+                        ),
+                    ]
+                }
             },
+            tacky::Instruction::Copy { src, dst } => vec![Instruction::Move {
+                src: src.to_assembly(),
+                dst: dst.to_assembly(),
+            }],
+            tacky::Instruction::Jump(label) => vec![Instruction::Jmp(label)],
+            tacky::Instruction::JumpIfZero { val, target } => {
+                vec![
+                    Instruction::Cmp {
+                        val1: Operand::Immediate(0),
+                        val2: val.to_assembly(),
+                    },
+                    Instruction::JmpCC(ConditionCode::Equal, target),
+                ]
+            }
+            tacky::Instruction::JumpIfNotZero { val, target } => {
+                vec![
+                    Instruction::Cmp {
+                        val1: Operand::Immediate(0),
+                        val2: val.to_assembly(),
+                    },
+                    Instruction::JmpCC(ConditionCode::NotEqual, target),
+                ]
+            }
+            tacky::Instruction::Label(idenifier) => vec![Instruction::Label(idenifier)],
         }
     }
 }
 
-impl ToAssembly for parser::BinaryOperator {
+impl TryFrom<tacky::BinaryOperator> for ConditionCode {
+    type Error = ();
+
+    fn try_from(value: tacky::BinaryOperator) -> Result<Self, Self::Error> {
+        match value {
+            tacky::BinaryOperator::Equal => Ok(ConditionCode::Equal),
+            tacky::BinaryOperator::NotEqual => Ok(ConditionCode::NotEqual),
+            tacky::BinaryOperator::LessThan => Ok(ConditionCode::Less),
+            tacky::BinaryOperator::GreaterThan => Ok(ConditionCode::Greater),
+            tacky::BinaryOperator::LessEqual => Ok(ConditionCode::LessEqual),
+            tacky::BinaryOperator::GreaterEqual => Ok(ConditionCode::GreaterEqual),
+            _ => Err(()),
+        }
+    }
+}
+
+impl TryFrom<parser::UnaryOperator> for UnaryOperator {
+    type Error = ();
+
+    fn try_from(value: parser::UnaryOperator) -> Result<Self, Self::Error> {
+        match value {
+            parser::UnaryOperator::Complement => Ok(UnaryOperator::Complement),
+            parser::UnaryOperator::Negate => Ok(UnaryOperator::Negate),
+            _ => Err(()),
+        }
+    }
+}
+
+impl ToAssembly for tacky::BinaryOperator {
     type Output = BinaryOperator;
 
     fn to_assembly(self) -> Self::Output {
         match self {
-            parser::BinaryOperator::Add => BinaryOperator::Add,
-            parser::BinaryOperator::Subtract => BinaryOperator::Sub,
-            parser::BinaryOperator::Multiply => BinaryOperator::Mult,
-            parser::BinaryOperator::BitwiseAnd => BinaryOperator::BitAnd,
-            parser::BinaryOperator::BitwiseOr => BinaryOperator::BitOr,
-            parser::BinaryOperator::BitwiseXor => BinaryOperator::BitXor,
-            parser::BinaryOperator::Divide
-            | parser::BinaryOperator::Remainder
-            | parser::BinaryOperator::LeftShift
-            | parser::BinaryOperator::RightShift => unreachable!(),
+            tacky::BinaryOperator::Add => BinaryOperator::Add,
+            tacky::BinaryOperator::Subtract => BinaryOperator::Sub,
+            tacky::BinaryOperator::Multiply => BinaryOperator::Mult,
+            tacky::BinaryOperator::BitwiseAnd => BinaryOperator::BitAnd,
+            tacky::BinaryOperator::BitwiseOr => BinaryOperator::BitOr,
+            tacky::BinaryOperator::BitwiseXor => BinaryOperator::BitXor,
+            tacky::BinaryOperator::Divide
+            | tacky::BinaryOperator::Remainder
+            | tacky::BinaryOperator::LeftShift
+            | tacky::BinaryOperator::RightShift
+            | tacky::BinaryOperator::Equal
+            | tacky::BinaryOperator::NotEqual
+            | tacky::BinaryOperator::LessThan
+            | tacky::BinaryOperator::GreaterThan
+            | tacky::BinaryOperator::LessEqual
+            | tacky::BinaryOperator::GreaterEqual => unreachable!(),
         }
     }
 }
@@ -236,11 +347,22 @@ impl Program {
                     update_operand(val2);
                     update_operand(dst);
                 }
-                Instruction::Shift { val, .. } => {
+                Instruction::Shift { val, shift, .. } => {
                     update_operand(val);
+                    update_operand(shift);
                 }
                 Instruction::Idiv(operand) => update_operand(operand),
-                Instruction::Cdq | Instruction::Return | Instruction::AllocateStack { .. } => {}
+                Instruction::Cmp { val1, val2 } => {
+                    update_operand(val1);
+                    update_operand(val2);
+                }
+                Instruction::SetCC(_, operand) => update_operand(operand),
+                Instruction::Cdq
+                | Instruction::Return
+                | Instruction::AllocateStack { .. }
+                | Instruction::Jmp(_)
+                | Instruction::JmpCC(..)
+                | Instruction::Label(_) => {}
             }
         }
 
@@ -301,6 +423,32 @@ impl Program {
                         dst: Operand::Stack(dst),
                     });
                 }
+                Instruction::Cmp {
+                    val1: Operand::Stack(val1),
+                    val2: Operand::Stack(val2),
+                } => {
+                    self.0.body.push(Instruction::Move {
+                        src: Operand::Stack(val1),
+                        dst: Operand::Register(Register::R10),
+                    });
+                    self.0.body.push(Instruction::Cmp {
+                        val1: Operand::Register(Register::R10),
+                        val2: Operand::Stack(val2),
+                    });
+                }
+                Instruction::Cmp {
+                    val1,
+                    val2: Operand::Immediate(i),
+                } => {
+                    self.0.body.push(Instruction::Move {
+                        src: Operand::Immediate(i),
+                        dst: Operand::Register(Register::R11),
+                    });
+                    self.0.body.push(Instruction::Cmp {
+                        val1,
+                        val2: Operand::Register(Register::R11),
+                    });
+                }
                 Instruction::BinaryOp {
                     op: BinaryOperator::Mult,
                     src,
@@ -318,6 +466,19 @@ impl Program {
                     self.0.body.push(Instruction::Move {
                         src: Operand::Register(Register::R11),
                         dst: Operand::Stack(dst),
+                    });
+                }
+                Instruction::Shift { left, shift, val }
+                    if !matches!(shift, Operand::Immediate(_)) =>
+                {
+                    self.0.body.push(Instruction::Move {
+                        src: shift,
+                        dst: Operand::Register(Register::CX),
+                    });
+                    self.0.body.push(Instruction::Shift {
+                        left,
+                        shift: Operand::Register(Register::CX),
+                        val,
                     });
                 }
                 instruction => self.0.body.push(instruction),

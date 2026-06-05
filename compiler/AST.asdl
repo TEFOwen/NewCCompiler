@@ -4,5 +4,8 @@ statement = Return(exp)
 exp = Constant(int)
     | Unary(unary_operator, exp)
     | Binary(binary_operator, exp, exp)
-unary_operator = Complement | Negate
-binary_operator = Add | Subtract | Multiply | Divide | Remainder | BitAnd | BitOR | BitXor | LeftShift | RightShift
+unary_operator = Complement | Negate | Not
+binary_operator = Add | Subtract | Multiply | Divide | Remainder
+                | BitAnd | BitOR | BitXor | LeftShift | RightShift
+                | And | Or | Equal | NotEqual
+                | LessThan | LessEqual | GreaterThan | GreaterEqual

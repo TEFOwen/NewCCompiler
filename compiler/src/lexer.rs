@@ -68,6 +68,14 @@ pub enum Symbol {
     GreaterThan,  // >
     DoubleLt,     // <<
     DoubleGt,     // >>
+    Exclamation,  // !
+    DoubleAmp,    // &&
+    DoubleBar,    // ||
+    Equal,        // =
+    DoubleEqual,  // ==
+    NotEqual,     // !=
+    LessEqual,    // <=
+    GreaterEqual, // >=
 }
 
 #[derive(Debug, Clone)]
@@ -197,14 +205,52 @@ where
                     '*' => Symbol::Asterisk,
                     '/' => Symbol::Slash,
                     '%' => Symbol::Percent,
-                    '&' => Symbol::Ampersand,
-                    '|' => Symbol::Bar,
+                    '=' => {
+                        if matches!(chars.peek(), Some(&'=')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::DoubleEqual
+                        } else {
+                            Symbol::Equal
+                        }
+                    }
+                    '!' => {
+                        if matches!(chars.peek(), Some(&'=')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::NotEqual
+                        } else {
+                            Symbol::Exclamation
+                        }
+                    }
+                    '&' => {
+                        if matches!(chars.peek(), Some(&'&')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::DoubleAmp
+                        } else {
+                            Symbol::Ampersand
+                        }
+                    }
+                    '|' => {
+                        if matches!(chars.peek(), Some(&'|')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::DoubleBar
+                        } else {
+                            Symbol::Bar
+                        }
+                    }
                     '^' => Symbol::Hat,
                     '<' => {
                         if matches!(chars.peek(), Some(&'<')) {
                             chars.next();
                             column_number += 1;
                             Symbol::DoubleLt
+                        } else if matches!(chars.peek(), Some(&'=')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::LessEqual
                         } else {
                             Symbol::LessThan
                         }
@@ -214,6 +260,10 @@ where
                             chars.next();
                             column_number += 1;
                             Symbol::DoubleGt
+                        } else if matches!(chars.peek(), Some(&'=')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::GreaterEqual
                         } else {
                             Symbol::GreaterThan
                         }

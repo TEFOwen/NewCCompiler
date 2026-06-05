@@ -1,6 +1,59 @@
 use std::io::Write;
 
-use crate::{codegen::*, parser};
+use crate::codegen::*;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterSize {
+    Byte,
+    Dword,
+}
+
+fn operand_to_string(operand: &Operand, size: RegisterSize) -> String {
+    match operand {
+        Operand::Immediate(i) => format!("${}", i),
+        Operand::Register(register) => match register {
+            Register::AX => format!(
+                "{}",
+                match size {
+                    RegisterSize::Byte => "%al",
+                    RegisterSize::Dword => "%eax",
+                }
+            ),
+            Register::DX => format!(
+                "{}",
+                match size {
+                    RegisterSize::Byte => "%dl",
+                    RegisterSize::Dword => "%edx",
+                }
+            ),
+            Register::CX => format!(
+                "{}",
+                match size {
+                    RegisterSize::Byte => "%cl",
+                    RegisterSize::Dword => "%ecx",
+                }
+            ),
+            Register::R10 => format!(
+                "{}",
+                match size {
+                    RegisterSize::Byte => "%r10b",
+                    RegisterSize::Dword => "%r10d",
+                }
+            ),
+            Register::R11 => format!(
+                "{}",
+                match size {
+                    RegisterSize::Byte => "%r11b",
+                    RegisterSize::Dword => "%r11d",
+                }
+            ),
+        },
+        Operand::Stack(offset) => format!("-{}(%rbp)", offset),
+        Operand::Pseudo(_) => unreachable!(
+            "Pseudo operands should have been replaced by stack offsets in codegen::Program::update_pseudo_operands()"
+        ),
+    }
+}
 
 pub trait EmitCode {
     fn emit_code(&self, out: impl Write) -> std::io::Result<()>;
@@ -30,11 +83,12 @@ impl EmitCode for Instruction {
     fn emit_code(&self, mut out: impl Write) -> std::io::Result<()> {
         match self {
             Instruction::Move { src, dst } => {
-                write!(out, "\tmovl ")?;
-                src.emit_code(&mut out)?;
-                write!(out, ", ")?;
-                dst.emit_code(&mut out)?;
-                writeln!(out)
+                writeln!(
+                    out,
+                    "\tmovl {}, {}",
+                    operand_to_string(src, RegisterSize::Dword),
+                    operand_to_string(dst, RegisterSize::Dword)
+                )
             }
             Instruction::Return => {
                 writeln!(out, "\tmovq %rbp, %rsp")?;
@@ -44,9 +98,7 @@ impl EmitCode for Instruction {
             Instruction::UnaryOp { operator, operand } => {
                 write!(out, "\t")?;
                 operator.emit_code(&mut out)?;
-                write!(out, " ")?;
-                operand.emit_code(&mut out)?;
-                writeln!(out)
+                writeln!(out, " {}", operand_to_string(operand, RegisterSize::Dword))
             }
             Instruction::AllocateStack { size } => {
                 writeln!(out, "\tsubq ${}, %rsp", size)
@@ -54,32 +106,59 @@ impl EmitCode for Instruction {
             Instruction::BinaryOp { op, src, dst } => {
                 write!(out, "\t")?;
                 op.emit_code(&mut out)?;
-                write!(out, " ")?;
-                src.emit_code(&mut out)?;
-                write!(out, ", ")?;
-                dst.emit_code(&mut out)?;
-                writeln!(out)
+                writeln!(
+                    out,
+                    " {}, {}",
+                    operand_to_string(src, RegisterSize::Dword),
+                    operand_to_string(dst, RegisterSize::Dword)
+                )
             }
-            Instruction::Shift { left, val } => {
-                write!(out, "\t{} %cl, ", if *left { "sall" } else { "sarl" })?;
-                val.emit_code(&mut out)?;
-                writeln!(out)
+            Instruction::Shift { left, val, shift } => {
+                writeln!(
+                    out,
+                    "\t{} {}, {}",
+                    if *left { "sall" } else { "sarl" },
+                    operand_to_string(shift, RegisterSize::Byte),
+                    operand_to_string(val, RegisterSize::Dword)
+                )
             }
             Instruction::Idiv(operand) => {
-                write!(out, "\tidivl ")?;
-                operand.emit_code(&mut out)?;
-                writeln!(out)
+                writeln!(
+                    out,
+                    "\tidivl {}",
+                    operand_to_string(operand, RegisterSize::Dword)
+                )
             }
             Instruction::Cdq => writeln!(out, "\tcdq"),
+            Instruction::Cmp { val1, val2 } => {
+                writeln!(
+                    out,
+                    "\tcmpl {}, {}",
+                    operand_to_string(val1, RegisterSize::Dword),
+                    operand_to_string(val2, RegisterSize::Dword)
+                )
+            }
+            Instruction::Jmp(label) => writeln!(out, "\tjmp .L{}", label),
+            Instruction::JmpCC(condition_code, label) => {
+                write!(out, "\tj")?;
+                condition_code.emit_code(&mut out)?;
+                writeln!(out, " .L{}", label)
+            }
+            Instruction::SetCC(condition_code, operand) => {
+                write!(out, "\tset")?;
+                condition_code.emit_code(&mut out)?;
+                writeln!(out, " {}", operand_to_string(operand, RegisterSize::Byte))
+            }
+            Instruction::Label(identifier) => writeln!(out, ".L{}:", identifier),
         }
     }
 }
 
-impl EmitCode for parser::UnaryOperator {
+impl EmitCode for UnaryOperator {
     fn emit_code(&self, mut out: impl Write) -> std::io::Result<()> {
         match self {
-            parser::UnaryOperator::Complement => write!(out, "notl"),
-            parser::UnaryOperator::Negate => write!(out, "negl"),
+            UnaryOperator::Complement => write!(out, "notl"),
+            UnaryOperator::Negate => write!(out, "negl"),
         }
     }
 }
@@ -97,19 +176,6 @@ impl EmitCode for BinaryOperator {
     }
 }
 
-impl EmitCode for Operand {
-    fn emit_code(&self, mut out: impl Write) -> std::io::Result<()> {
-        match self {
-            Operand::Immediate(i) => write!(out, "${}", i),
-            Operand::Register(register) => register.emit_code(&mut out),
-            Operand::Pseudo(_) => unreachable!(
-                "Pseudo operands should have been replaced by stack offsets in codegen::Program::update_pseudo_operands()"
-            ),
-            Operand::Stack(offset) => write!(out, "-{}(%rbp)", offset),
-        }
-    }
-}
-
 impl EmitCode for Register {
     fn emit_code(&self, mut out: impl Write) -> std::io::Result<()> {
         match self {
@@ -119,5 +185,22 @@ impl EmitCode for Register {
             Register::R10 => write!(out, "%r10d"),
             Register::R11 => write!(out, "%r11d"),
         }
+    }
+}
+
+impl EmitCode for ConditionCode {
+    fn emit_code(&self, mut out: impl Write) -> std::io::Result<()> {
+        write!(
+            out,
+            "{}",
+            match self {
+                ConditionCode::Equal => "e",
+                ConditionCode::NotEqual => "ne",
+                ConditionCode::Less => "l",
+                ConditionCode::LessEqual => "le",
+                ConditionCode::Greater => "g",
+                ConditionCode::GreaterEqual => "ge",
+            }
+        )
     }
 }

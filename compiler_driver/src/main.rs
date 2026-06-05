@@ -6,7 +6,6 @@ use std::{
 };
 
 use clap::{Args, Parser};
-use compiler::{codeemission::EmitCode, codegen, tacky::ToTacky};
 
 #[derive(Parser)]
 #[command(name = "compiler_driver")]
@@ -105,14 +104,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let tacky = ast.to_tacky();
+    let tacky = compiler::tacky::ToTacky::to_tacky(ast);
 
     if args.compile_options.tacky {
         println!("TACKY IR: {:#?}", tacky);
         return Ok(());
     }
 
-    let assembly = codegen::to_assembly(tacky);
+    let assembly = compiler::codegen::to_assembly(tacky);
 
     if args.compile_options.codegen {
         println!("Assembly: {:#?}", assembly);
@@ -121,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let assembly_path = input_path.with_extension("s");
     let assembly_file = File::create(&assembly_path)?;
-    assembly.emit_code(assembly_file)?;
+    compiler::codeemission::EmitCode::emit_code(&assembly, assembly_file)?;
 
     if args.compile_options.assemble {
         println!("Assembly written to: {}", assembly_path.to_str().unwrap());

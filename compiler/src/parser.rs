@@ -48,6 +48,15 @@ pub enum BinaryOperator {
     BitwiseXor,
     LeftShift,
     RightShift,
+
+    LogicalAnd,
+    LogicalOr,
+    Equal,
+    NotEqual,
+    LessThan,
+    GreaterThan,
+    LessEqual,
+    GreaterEqual,
 }
 
 #[derive(Debug)]
@@ -61,6 +70,7 @@ pub enum Factor {
 pub enum UnaryOperator {
     Complement,
     Negate,
+    LogicalNot,
 }
 
 trait ToAst {
@@ -164,6 +174,14 @@ impl Expression {
                     Symbol::Hat => BinaryOperator::BitwiseXor,
                     Symbol::DoubleLt => BinaryOperator::LeftShift,
                     Symbol::DoubleGt => BinaryOperator::RightShift,
+                    Symbol::DoubleAmp => BinaryOperator::LogicalAnd,
+                    Symbol::DoubleBar => BinaryOperator::LogicalOr,
+                    Symbol::DoubleEqual => BinaryOperator::Equal,
+                    Symbol::NotEqual => BinaryOperator::NotEqual,
+                    Symbol::LessThan => BinaryOperator::LessThan,
+                    Symbol::GreaterThan => BinaryOperator::GreaterThan,
+                    Symbol::LessEqual => BinaryOperator::LessEqual,
+                    Symbol::GreaterEqual => BinaryOperator::GreaterEqual,
                     _ => unreachable!(),
                 },
                 left: Box::new(left),
@@ -179,9 +197,15 @@ impl Expression {
             Symbol::Asterisk | Symbol::Slash | Symbol::Percent => Some(50),
             Symbol::Plus | Symbol::Hyphen => Some(45),
             Symbol::DoubleLt | Symbol::DoubleGt => Some(40),
-            Symbol::Ampersand => Some(35),
-            Symbol::Hat => Some(30),
-            Symbol::Bar => Some(25),
+            Symbol::LessThan | Symbol::GreaterThan | Symbol::LessEqual | Symbol::GreaterEqual => {
+                Some(35)
+            }
+            Symbol::DoubleEqual | Symbol::NotEqual => Some(30),
+            Symbol::Ampersand => Some(25),
+            Symbol::Hat => Some(20),
+            Symbol::Bar => Some(15),
+            Symbol::DoubleAmp => Some(10),
+            Symbol::DoubleBar => Some(5),
             _ => None,
         }
     }
@@ -198,7 +222,9 @@ impl ToAst for Factor {
         let Token(token_type, _) = expect_token!(
             tokens,
             TokenType::Constant(_)
-                | TokenType::Symbol(Symbol::OpenParen | Symbol::Tilde | Symbol::Hyphen),
+                | TokenType::Symbol(
+                    Symbol::OpenParen | Symbol::Tilde | Symbol::Hyphen | Symbol::Exclamation
+                ),
             "constant, unary operator, or '('"
         );
 
@@ -215,6 +241,7 @@ impl ToAst for Factor {
                     op: match s {
                         Symbol::Tilde => UnaryOperator::Complement,
                         Symbol::Hyphen => UnaryOperator::Negate,
+                        Symbol::Exclamation => UnaryOperator::LogicalNot,
                         _ => unreachable!(),
                     },
                     fac: Box::new(inner),
