@@ -31,6 +31,14 @@ struct CompileOptions {
         long,
         short,
         action,
+        help = "Run only semantic analysis (no TACKY IR generated)"
+    )]
+    validate: bool,
+
+    #[clap(
+        long,
+        short,
+        action,
         help = "Run only TACKY intermediate representation generation"
     )]
     tacky: bool,
@@ -104,7 +112,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let tacky = compiler::tacky::ToTacky::to_tacky(ast);
+    let resolved_ast = match compiler::semantic_analysis::resolve_program(ast) {
+        Ok(resolved_ast) => {
+            if args.compile_options.validate {
+                println!("Semantic analysis successful: {:#?}", resolved_ast);
+                return Ok(());
+            }
+            resolved_ast
+        }
+        Err(e) => {
+            eprintln!("Semantic analysis error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let tacky = compiler::tacky::ToTacky::to_tacky(resolved_ast);
 
     if args.compile_options.tacky {
         println!("TACKY IR: {:#?}", tacky);

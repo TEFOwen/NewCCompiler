@@ -18,12 +18,26 @@ pub struct Program(pub FuncDef);
 #[derive(Debug)]
 pub struct FuncDef {
     pub name: String,
-    pub body: Statement,
+    pub body: Vec<BlockItem>,
+}
+
+#[derive(Debug)]
+pub enum BlockItem {
+    Statement(Statement),
+    Declaration(Declaration),
+}
+
+#[derive(Debug)]
+pub struct Declaration {
+    pub identifier: String,
+    pub initialiser: Option<Expression>,
 }
 
 #[derive(Debug)]
 pub enum Statement {
     Return(Expression),
+    Expression(Expression),
+    Null,
 }
 
 #[derive(Debug)]
@@ -31,6 +45,10 @@ pub enum Expression {
     Factor(Factor),
     BinaryOp {
         op: BinaryOperator,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Assignment {
         left: Box<Expression>,
         right: Box<Expression>,
     },
@@ -62,6 +80,7 @@ pub enum BinaryOperator {
 #[derive(Debug)]
 pub enum Factor {
     Constant(u32),
+    Var(String),
     UnaryOp { op: UnaryOperator, fac: Box<Factor> },
     Paren(Box<Expression>),
 }
@@ -131,7 +150,14 @@ impl ToAst for FuncDef {
         expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
         expect_token!(tokens, TokenType::Symbol(Symbol::OpenBrace), "'{'");
 
-        let body = Statement::to_ast(tokens)?;
+        let mut body = Vec::new();
+        while !matches!(
+            tokens.peek(),
+            Some(Token(TokenType::Symbol(Symbol::CloseBrace), _))
+        ) {
+            let block_item = BlockItem::to_ast(tokens)?;
+            body.push(block_item);
+        }
 
         expect_token!(tokens, TokenType::Symbol(Symbol::CloseBrace), "'}'");
 
@@ -139,12 +165,67 @@ impl ToAst for FuncDef {
     }
 }
 
+impl ToAst for BlockItem {
+    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+        if matches!(
+            tokens.peek(),
+            Some(Token(TokenType::Keyword(Keyword::Int), _))
+        ) {
+            Ok(BlockItem::Declaration(Declaration::to_ast(tokens)?))
+        } else {
+            Ok(BlockItem::Statement(Statement::to_ast(tokens)?))
+        }
+    }
+}
+
+impl ToAst for Declaration {
+    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+        expect_token!(tokens, TokenType::Keyword(Keyword::Int), "int");
+        let Token(TokenType::Identifier(identifier), _) =
+            expect_token!(tokens, TokenType::Identifier(_), "variable name")
+        else {
+            unreachable!()
+        };
+
+        let initialiser = if matches!(
+            tokens.peek(),
+            Some(Token(TokenType::Symbol(Symbol::Equal), _))
+        ) {
+            tokens.next();
+            Some(Expression::to_ast(tokens)?)
+        } else {
+            None
+        };
+
+        expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
+
+        Ok(Declaration {
+            identifier,
+            initialiser,
+        })
+    }
+}
+
 impl ToAst for Statement {
     fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
-        expect_token!(tokens, TokenType::Keyword(Keyword::Return), "return");
-        let expr = Expression::to_ast(tokens)?;
-        expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
-        Ok(Statement::Return(expr))
+        match tokens.peek() {
+            Some(Token(TokenType::Keyword(Keyword::Return), _)) => {
+                tokens.next(); // Consume the 'return' token
+                let expr = Expression::to_ast(tokens)?;
+                expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
+                Ok(Statement::Return(expr))
+            }
+            Some(Token(TokenType::Symbol(Symbol::Semicolon), _)) => {
+                tokens.next(); // Consume the ';'
+                Ok(Statement::Null)
+            }
+            Some(_) => {
+                let expr = Expression::to_ast(tokens)?;
+                expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
+                Ok(Statement::Expression(expr))
+            }
+            None => Err(ParserError::EndOfTokenStream),
+        }
     }
 }
 
@@ -161,32 +242,41 @@ impl Expression {
             let Some(Token(TokenType::Symbol(op), _)) = tokens.next() else {
                 unreachable!()
             };
-            let right = Self::parse_min_prec(tokens, Self::get_precedence(op).unwrap() + 1)?;
-            left = Expression::BinaryOp {
-                op: match op {
-                    Symbol::Plus => BinaryOperator::Add,
-                    Symbol::Hyphen => BinaryOperator::Subtract,
-                    Symbol::Asterisk => BinaryOperator::Multiply,
-                    Symbol::Slash => BinaryOperator::Divide,
-                    Symbol::Percent => BinaryOperator::Remainder,
-                    Symbol::Ampersand => BinaryOperator::BitwiseAnd,
-                    Symbol::Bar => BinaryOperator::BitwiseOr,
-                    Symbol::Hat => BinaryOperator::BitwiseXor,
-                    Symbol::DoubleLt => BinaryOperator::LeftShift,
-                    Symbol::DoubleGt => BinaryOperator::RightShift,
-                    Symbol::DoubleAmp => BinaryOperator::LogicalAnd,
-                    Symbol::DoubleBar => BinaryOperator::LogicalOr,
-                    Symbol::DoubleEqual => BinaryOperator::Equal,
-                    Symbol::NotEqual => BinaryOperator::NotEqual,
-                    Symbol::LessThan => BinaryOperator::LessThan,
-                    Symbol::GreaterThan => BinaryOperator::GreaterThan,
-                    Symbol::LessEqual => BinaryOperator::LessEqual,
-                    Symbol::GreaterEqual => BinaryOperator::GreaterEqual,
-                    _ => unreachable!(),
-                },
-                left: Box::new(left),
-                right: Box::new(right),
-            };
+
+            if op == Symbol::Equal {
+                let right = Self::parse_min_prec(tokens, Self::get_precedence(op).unwrap())?;
+                left = Expression::Assignment {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                };
+            } else {
+                let right = Self::parse_min_prec(tokens, Self::get_precedence(op).unwrap() + 1)?;
+                left = Expression::BinaryOp {
+                    op: match op {
+                        Symbol::Plus => BinaryOperator::Add,
+                        Symbol::Hyphen => BinaryOperator::Subtract,
+                        Symbol::Asterisk => BinaryOperator::Multiply,
+                        Symbol::Slash => BinaryOperator::Divide,
+                        Symbol::Percent => BinaryOperator::Remainder,
+                        Symbol::Ampersand => BinaryOperator::BitwiseAnd,
+                        Symbol::Bar => BinaryOperator::BitwiseOr,
+                        Symbol::Hat => BinaryOperator::BitwiseXor,
+                        Symbol::DoubleLt => BinaryOperator::LeftShift,
+                        Symbol::DoubleGt => BinaryOperator::RightShift,
+                        Symbol::DoubleAmp => BinaryOperator::LogicalAnd,
+                        Symbol::DoubleBar => BinaryOperator::LogicalOr,
+                        Symbol::DoubleEqual => BinaryOperator::Equal,
+                        Symbol::NotEqual => BinaryOperator::NotEqual,
+                        Symbol::LessThan => BinaryOperator::LessThan,
+                        Symbol::GreaterThan => BinaryOperator::GreaterThan,
+                        Symbol::LessEqual => BinaryOperator::LessEqual,
+                        Symbol::GreaterEqual => BinaryOperator::GreaterEqual,
+                        _ => unreachable!(),
+                    },
+                    left: Box::new(left),
+                    right: Box::new(right),
+                };
+            }
         }
 
         Ok(left)
@@ -206,6 +296,7 @@ impl Expression {
             Symbol::Bar => Some(15),
             Symbol::DoubleAmp => Some(10),
             Symbol::DoubleBar => Some(5),
+            Symbol::Equal => Some(1),
             _ => None,
         }
     }
@@ -222,14 +313,16 @@ impl ToAst for Factor {
         let Token(token_type, _) = expect_token!(
             tokens,
             TokenType::Constant(_)
+                | TokenType::Identifier(_)
                 | TokenType::Symbol(
                     Symbol::OpenParen | Symbol::Tilde | Symbol::Hyphen | Symbol::Exclamation
                 ),
-            "constant, unary operator, or '('"
+            "constant, identifier, unary operator, or '('"
         );
 
         match token_type {
             TokenType::Constant(i) => return Ok(Factor::Constant(i)),
+            TokenType::Identifier(identifier) => return Ok(Factor::Var(identifier)),
             TokenType::Symbol(Symbol::OpenParen) => {
                 let expr = Expression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");

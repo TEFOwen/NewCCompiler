@@ -114,7 +114,23 @@ impl ToTacky for parser::FuncDef {
     fn to_tacky(self) -> Self::Output {
         FuncDef {
             name: self.name,
-            body: self.body.to_tacky(),
+            body: self
+                .body
+                .into_iter()
+                .flat_map(|s| s.to_tacky())
+                .chain(std::iter::once(Instruction::Return(Value::Constant(0))))
+                .collect(),
+        }
+    }
+}
+
+impl ToTacky for parser::BlockItem {
+    type Output = Vec<Instruction>;
+
+    fn to_tacky(self) -> Self::Output {
+        match self {
+            parser::BlockItem::Statement(statement) => statement.to_tacky(),
+            parser::BlockItem::Declaration(declaration) => declaration.to_tacky(),
         }
     }
 }
@@ -129,7 +145,26 @@ impl ToTacky for parser::Statement {
                 instructions.push(Instruction::Return(var));
                 instructions
             }
+            parser::Statement::Expression(expression) => expression.to_tacky().0,
+            parser::Statement::Null => vec![],
         }
+    }
+}
+
+impl ToTacky for parser::Declaration {
+    type Output = Vec<Instruction>;
+
+    fn to_tacky(self) -> Self::Output {
+        let mut instructions = vec![];
+        if let Some(initialiser) = self.initialiser {
+            let (init_instructions, init_val) = initialiser.to_tacky();
+            instructions.extend(init_instructions);
+            instructions.push(Instruction::Copy {
+                src: init_val,
+                dst: Value::Var(self.identifier),
+            });
+        }
+        instructions
     }
 }
 
@@ -270,7 +305,21 @@ impl ToTacky for parser::Expression {
 
                 (instructions, out_val)
             }
-            _ => unreachable!(),
+            parser::Expression::Assignment { left, right } => {
+                let (mut instructions, right_val) = right.to_tacky();
+                let left_val = match *left {
+                    parser::Expression::Factor(parser::Factor::Var(identifier)) => {
+                        Value::Var(identifier)
+                    }
+                    _ => panic!("Invalid lvalue in assignment"),
+                };
+                instructions.push(Instruction::Copy {
+                    src: right_val,
+                    dst: left_val.clone(),
+                });
+                (instructions, left_val)
+            }
+            parser::Expression::BinaryOp { .. } => unreachable!(),
         }
     }
 }
@@ -292,6 +341,7 @@ impl ToTacky for parser::Factor {
                 (instructions, dst)
             }
             parser::Factor::Paren(expression) => expression.to_tacky(),
+            parser::Factor::Var(identifier) => (vec![], Value::Var(identifier)),
         }
     }
 }
