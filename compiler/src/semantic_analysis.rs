@@ -22,7 +22,7 @@ pub enum SemanticError {
     #[error("Variable not declared: {0}")]
     VariableNotDeclared(String),
     #[error("Invalid lvalue: {0:?}")]
-    InvalidLvalue(Box<parser::Expression>),
+    InvalidLvalue(parser::Expression),
 }
 
 trait IsLvalue {
@@ -31,7 +31,36 @@ trait IsLvalue {
 
 impl IsLvalue for parser::Expression {
     fn is_lvalue(&self) -> bool {
-        matches!(self, parser::Expression::Factor(parser::Factor::Var(_)))
+        match self {
+            parser::Expression::Factor(factor) => factor.is_lvalue(),
+            parser::Expression::BinaryOp { .. } => false,
+            parser::Expression::Assignment { .. } => false,
+        }
+    }
+}
+
+impl IsLvalue for parser::Factor {
+    fn is_lvalue(&self) -> bool {
+        match self {
+            parser::Factor::UnaryOp { .. } => false,
+            parser::Factor::Postfix(postfix) => postfix.is_lvalue(),
+        }
+    }
+}
+
+impl IsLvalue for parser::Postfix {
+    fn is_lvalue(&self) -> bool {
+        self.postfix.len() == 0 && self.primary.is_lvalue()
+    }
+}
+
+impl IsLvalue for parser::Primary {
+    fn is_lvalue(&self) -> bool {
+        match self {
+            parser::Primary::Constant(_) => false,
+            parser::Primary::Var(_) => true,
+            parser::Primary::Paren(expression) => expression.is_lvalue(),
+        }
     }
 }
 
@@ -117,7 +146,7 @@ impl Resolve for parser::Expression {
                         right: Box::new(right.resolve(variables)?),
                     })
                 } else {
-                    Err(SemanticError::InvalidLvalue(left))
+                    Err(SemanticError::InvalidLvalue(*left))
                 }
             }
         }
@@ -127,21 +156,61 @@ impl Resolve for parser::Expression {
 impl Resolve for parser::Factor {
     fn resolve(self, variables: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
         match self {
-            parser::Factor::Var(identifier) => {
+            parser::Factor::UnaryOp { op, fac }
+                if matches!(
+                    op,
+                    parser::UnaryOperator::PrefixIncrement | parser::UnaryOperator::PrefixDecrement
+                ) =>
+            {
+                if !fac.is_lvalue() {
+                    return Err(SemanticError::InvalidLvalue(parser::Expression::Factor(
+                        *fac,
+                    )));
+                }
+                Ok(Self::UnaryOp {
+                    op,
+                    fac: Box::new(fac.resolve(variables)?),
+                })
+            }
+            parser::Factor::UnaryOp { op, fac } => Ok(Self::UnaryOp {
+                op,
+                fac: Box::new(fac.resolve(variables)?),
+            }),
+            parser::Factor::Postfix(postfix) => {
+                postfix.resolve(variables).map(parser::Factor::Postfix)
+            }
+        }
+    }
+}
+
+impl Resolve for parser::Postfix {
+    fn resolve(self, variables: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
+        if self.postfix.len() > 1 || (self.postfix.len() > 0 && !self.primary.is_lvalue()) {
+            return Err(SemanticError::InvalidLvalue(parser::Expression::Factor(
+                parser::Factor::Postfix(self),
+            )));
+        }
+        Ok(Self {
+            primary: self.primary.resolve(variables)?,
+            postfix: self.postfix,
+        })
+    }
+}
+
+impl Resolve for parser::Primary {
+    fn resolve(self, variables: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
+        match self {
+            parser::Primary::Var(identifier) => {
                 if let Some(unique_name) = variables.get(&identifier) {
                     Ok(Self::Var(unique_name.clone()))
                 } else {
                     Err(SemanticError::VariableNotDeclared(identifier))
                 }
             }
-            parser::Factor::UnaryOp { op, fac } => Ok(Self::UnaryOp {
-                op,
-                fac: Box::new(fac.resolve(variables)?),
-            }),
-            parser::Factor::Paren(expression) => {
+            parser::Primary::Paren(expression) => {
                 Ok(Self::Paren(Box::new(expression.resolve(variables)?)))
             }
-            parser::Factor::Constant(val) => Ok(Self::Constant(val)),
+            parser::Primary::Constant(val) => Ok(Self::Constant(val)),
         }
     }
 }

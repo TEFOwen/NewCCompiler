@@ -85,9 +85,26 @@ pub enum Associativity {
 
 #[derive(Debug, Clone)]
 pub enum Factor {
+    UnaryOp { op: UnaryOperator, fac: Box<Factor> },
+    Postfix(Postfix),
+}
+
+#[derive(Debug, Clone)]
+pub struct Postfix {
+    pub primary: Primary,
+    pub postfix: Vec<PostfixOp>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostfixOp {
+    PostfixIncrement,
+    PostfixDecrement,
+}
+
+#[derive(Debug, Clone)]
+pub enum Primary {
     Constant(u32),
     Var(String),
-    UnaryOp { op: UnaryOperator, fac: Box<Factor> },
     Paren(Box<Expression>),
 }
 
@@ -96,12 +113,15 @@ pub enum UnaryOperator {
     Complement,
     Negate,
     LogicalNot,
+    PrefixIncrement,
+    PrefixDecrement,
 }
 
-trait ToAst {
-    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError>
-    where
-        Self: Sized;
+trait ToAst
+where
+    Self: Sized,
+{
+    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError>;
 }
 
 pub fn parse(tokens: Vec<Token>) -> Result<Program, ParserError> {
@@ -400,35 +420,83 @@ impl ToAst for Expression {
 
 impl ToAst for Factor {
     fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+        if matches!(
+            tokens.peek(),
+            Some(Token(
+                TokenType::Symbol(
+                    Symbol::Tilde
+                        | Symbol::Hyphen
+                        | Symbol::Exclamation
+                        | Symbol::DoublePlus
+                        | Symbol::DoubleHyphen
+                ),
+                _
+            ))
+        ) {
+            let Some(Token(TokenType::Symbol(s), _)) = tokens.next() else {
+                unreachable!()
+            };
+
+            let inner = Factor::to_ast(tokens)?;
+            Ok(Factor::UnaryOp {
+                op: match s {
+                    Symbol::Tilde => UnaryOperator::Complement,
+                    Symbol::Hyphen => UnaryOperator::Negate,
+                    Symbol::Exclamation => UnaryOperator::LogicalNot,
+                    Symbol::DoublePlus => UnaryOperator::PrefixIncrement,
+                    Symbol::DoubleHyphen => UnaryOperator::PrefixDecrement,
+                    _ => unreachable!(),
+                },
+                fac: Box::new(inner),
+            })
+        } else {
+            Postfix::to_ast(tokens).map(Factor::Postfix)
+        }
+    }
+}
+
+impl ToAst for Postfix {
+    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+        let primary = Primary::to_ast(tokens)?;
+        let mut postfix = Vec::new();
+        while matches!(
+            tokens.peek(),
+            Some(Token(
+                TokenType::Symbol(Symbol::DoublePlus | Symbol::DoubleHyphen),
+                _
+            ))
+        ) {
+            let Some(Token(TokenType::Symbol(s), _)) = tokens.next() else {
+                unreachable!()
+            };
+
+            postfix.push(match s {
+                Symbol::DoublePlus => PostfixOp::PostfixIncrement,
+                Symbol::DoubleHyphen => PostfixOp::PostfixDecrement,
+                _ => unreachable!(),
+            });
+        }
+        Ok(Postfix { primary, postfix })
+    }
+}
+
+impl ToAst for Primary {
+    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         let Token(token_type, _) = expect_token!(
             tokens,
             TokenType::Constant(_)
                 | TokenType::Identifier(_)
-                | TokenType::Symbol(
-                    Symbol::OpenParen | Symbol::Tilde | Symbol::Hyphen | Symbol::Exclamation
-                ),
-            "constant, identifier, unary operator, or '('"
+                | TokenType::Symbol(Symbol::OpenParen),
+            "constant, identifier, or '('"
         );
 
         match token_type {
-            TokenType::Constant(i) => return Ok(Factor::Constant(i)),
-            TokenType::Identifier(identifier) => return Ok(Factor::Var(identifier)),
+            TokenType::Constant(i) => return Ok(Primary::Constant(i)),
+            TokenType::Identifier(identifier) => return Ok(Primary::Var(identifier)),
             TokenType::Symbol(Symbol::OpenParen) => {
                 let expr = Expression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
-                return Ok(Factor::Paren(Box::new(expr)));
-            }
-            TokenType::Symbol(s) => {
-                let inner = Factor::to_ast(tokens)?;
-                return Ok(Factor::UnaryOp {
-                    op: match s {
-                        Symbol::Tilde => UnaryOperator::Complement,
-                        Symbol::Hyphen => UnaryOperator::Negate,
-                        Symbol::Exclamation => UnaryOperator::LogicalNot,
-                        _ => unreachable!(),
-                    },
-                    fac: Box::new(inner),
-                });
+                return Ok(Primary::Paren(Box::new(expr)));
             }
             _ => unreachable!(),
         }

@@ -55,19 +55,21 @@ pub enum Symbol {
     CloseBrace, // }
     Semicolon,  // ;
 
-    Exclamation,  // !
-    Tilde,        // ~
-    Hyphen,       // -
+    Exclamation, // !
+    Tilde,       // ~
+    Hyphen,      // -
+    Plus,        // +
+    Asterisk,    // *
+    Slash,       // /
+    Percent,     // %
+    Ampersand,   // &
+    Bar,         // |
+    Hat,         // ^
+    DoubleLt,    // <<
+    DoubleGt,    // >>
+
     DoubleHyphen, // --
-    Plus,         // +
-    Asterisk,     // *
-    Slash,        // /
-    Percent,      // %
-    Ampersand,    // &
-    Bar,          // |
-    Hat,          // ^
-    DoubleLt,     // <<
-    DoubleGt,     // >>
+    DoublePlus,   // ++
 
     DoubleAmp,    // &&
     DoubleBar,    // ||
@@ -223,6 +225,10 @@ where
                             chars.next();
                             column_number += 1;
                             Symbol::PlusEqual
+                        } else if matches!(chars.peek(), Some(&'+')) {
+                            chars.next();
+                            column_number += 1;
+                            Symbol::DoublePlus
                         } else {
                             Symbol::Plus
                         }

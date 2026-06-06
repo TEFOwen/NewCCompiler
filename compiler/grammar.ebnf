@@ -4,8 +4,11 @@
 <declaration> ::= "int" <identifier> ["=" <exp>] ";"
 <statement> ::= "return" <exp> ";" | <exp> ";" | ";"
 <exp> ::= <factor> | <exp> <binop> <exp>
-<factor> ::= <int> | <identifier> | <unop> <factor> | "(" <exp> ")"
-<unop> ::= "-" | "~" | "!"
+<factor> ::= <unop> <factor> | <postfix>
+<postfix> ::= <primary> { <postfix-op> }
+<primary> ::= <int> | <identifier> | "(" <exp> ")"
+<unop> ::= "-" | "~" | "!" | "--" | "++"
+<postfix-op> ::= "--" | "++"
 <binop> ::= "-" | "+" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" | "&&" | "||" | "==" | "!=" | "<" | "<=" | ">" | ">="
 <identifier> ::= ? An identifier token ?
 <int> ::= ? A constant token ?

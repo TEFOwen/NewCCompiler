@@ -307,12 +307,7 @@ impl ToTacky for parser::Expression {
             }
             parser::Expression::Assignment { left, right } => {
                 let (mut instructions, right_val) = right.to_tacky();
-                let left_val = match *left {
-                    parser::Expression::Factor(parser::Factor::Var(identifier)) => {
-                        Value::Var(identifier)
-                    }
-                    _ => panic!("Invalid lvalue in assignment"),
-                };
+                let left_val = left.to_tacky().1;
                 instructions.push(Instruction::Copy {
                     src: right_val,
                     dst: left_val.clone(),
@@ -329,7 +324,30 @@ impl ToTacky for parser::Factor {
 
     fn to_tacky(self) -> Self::Output {
         match self {
-            parser::Factor::Constant(val) => (vec![], Value::Constant(val)),
+            parser::Factor::UnaryOp { op, fac }
+                if matches!(
+                    op,
+                    parser::UnaryOperator::PrefixIncrement | parser::UnaryOperator::PrefixDecrement
+                ) =>
+            {
+                let (mut instructions, var) = fac.to_tacky();
+                let dst = next_unary_op_var();
+                instructions.push(Instruction::BinaryOp {
+                    op: if op == parser::UnaryOperator::PrefixIncrement {
+                        BinaryOperator::Add
+                    } else {
+                        BinaryOperator::Subtract
+                    },
+                    val1: var.clone(),
+                    val2: Value::Constant(1),
+                    dst: dst.clone(),
+                });
+                instructions.push(Instruction::Copy {
+                    src: dst.clone(),
+                    dst: var,
+                });
+                (instructions, dst)
+            }
             parser::Factor::UnaryOp { op, fac } => {
                 let (mut instructions, src) = fac.to_tacky();
                 let dst = next_unary_op_var();
@@ -340,8 +358,51 @@ impl ToTacky for parser::Factor {
                 });
                 (instructions, dst)
             }
-            parser::Factor::Paren(expression) => expression.to_tacky(),
-            parser::Factor::Var(identifier) => (vec![], Value::Var(identifier)),
+            parser::Factor::Postfix(postfix) => postfix.to_tacky(),
+        }
+    }
+}
+
+impl ToTacky for parser::Postfix {
+    type Output = (Vec<Instruction>, Value);
+
+    fn to_tacky(self) -> Self::Output {
+        debug_assert!(
+            self.postfix.len() <= 1,
+            "Only one postfix operator is supported"
+        );
+        let (mut instructions, var) = self.primary.to_tacky();
+        if let Some(op) = self.postfix.into_iter().next() {
+            let dst = next_unary_op_var();
+            instructions.push(Instruction::Copy {
+                src: var.clone(),
+                dst: dst.clone(),
+            });
+            instructions.push(Instruction::BinaryOp {
+                op: if op == parser::PostfixOp::PostfixIncrement {
+                    BinaryOperator::Add
+                } else {
+                    BinaryOperator::Subtract
+                },
+                val1: dst.clone(),
+                val2: Value::Constant(1),
+                dst: var,
+            });
+            (instructions, dst)
+        } else {
+            (instructions, var)
+        }
+    }
+}
+
+impl ToTacky for parser::Primary {
+    type Output = (Vec<Instruction>, Value);
+
+    fn to_tacky(self) -> Self::Output {
+        match self {
+            parser::Primary::Constant(val) => (vec![], Value::Constant(val)),
+            parser::Primary::Paren(expression) => expression.to_tacky(),
+            parser::Primary::Var(identifier) => (vec![], Value::Var(identifier)),
         }
     }
 }

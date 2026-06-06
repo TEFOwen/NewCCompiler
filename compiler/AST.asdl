@@ -8,7 +8,7 @@ exp = Constant(int)
     | Unary(unary_operator, exp)
     | Binary(binary_operator, exp, exp)
     | Assignment(exp, exp)
-unary_operator = Complement | Negate | Not
+unary_operator = Complement | Negate | Not | Increment | Decrement
 binary_operator = Add | Subtract | Multiply | Divide | Remainder
                 | BitAnd | BitOR | BitXor | LeftShift | RightShift
                 | And | Or | Equal | NotEqual
