@@ -35,6 +35,7 @@ impl IsLvalue for parser::Expression {
             parser::Expression::Factor(factor) => factor.is_lvalue(),
             parser::Expression::BinaryOp { .. } => false,
             parser::Expression::Assignment { .. } => false,
+            parser::Expression::Conditional { .. } => false,
         }
     }
 }
@@ -126,6 +127,18 @@ impl Resolve for parser::Statement {
             parser::Statement::Return(exp) => Ok(Self::Return(exp.resolve(variables)?)),
             parser::Statement::Expression(exp) => Ok(Self::Expression(exp.resolve(variables)?)),
             parser::Statement::Null => Ok(Self::Null),
+            parser::Statement::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => Ok(Self::If {
+                condition: condition.resolve(variables)?,
+                then_branch: Box::new(then_branch.resolve(variables)?),
+                else_branch: else_branch
+                    .map(|else_branch| else_branch.resolve(variables))
+                    .transpose()?
+                    .map(Box::new),
+            }),
         }
     }
 }
@@ -149,6 +162,15 @@ impl Resolve for parser::Expression {
                     Err(SemanticError::InvalidLvalue(*left))
                 }
             }
+            parser::Expression::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => Ok(Self::Conditional {
+                condition: Box::new(condition.resolve(variables)?),
+                then_branch: Box::new(then_branch.resolve(variables)?),
+                else_branch: Box::new(else_branch.resolve(variables)?),
+            }),
         }
     }
 }

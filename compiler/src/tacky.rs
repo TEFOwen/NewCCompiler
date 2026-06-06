@@ -147,6 +147,28 @@ impl ToTacky for parser::Statement {
             }
             parser::Statement::Expression(expression) => expression.to_tacky().0,
             parser::Statement::Null => vec![],
+            parser::Statement::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let else_label = next_jump_label("if_else");
+                let end_label = next_jump_label("if_end");
+                let (mut instructions, cond) = condition.to_tacky();
+                instructions.push(Instruction::JumpIfZero {
+                    val: cond,
+                    target: else_label.clone(),
+                });
+                instructions.extend(then_branch.to_tacky());
+                instructions.push(Instruction::Jump(end_label.clone()));
+                instructions.push(Instruction::Label(else_label));
+                if let Some(else_branch) = else_branch {
+                    instructions.extend(else_branch.to_tacky());
+                }
+                instructions.push(Instruction::Label(end_label));
+
+                instructions
+            }
         }
     }
 }
@@ -315,6 +337,36 @@ impl ToTacky for parser::Expression {
                 (instructions, left_val)
             }
             parser::Expression::BinaryOp { .. } => unreachable!(),
+            parser::Expression::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let else_label = next_jump_label("cond_else");
+                let end_label = next_jump_label("cond_end");
+                let out_val = next_binary_op_var();
+                let (mut instructions, cond) = condition.to_tacky();
+                instructions.push(Instruction::JumpIfZero {
+                    val: cond,
+                    target: else_label.clone(),
+                });
+                let (then_instructions, then_val) = then_branch.to_tacky();
+                instructions.extend(then_instructions);
+                instructions.push(Instruction::Copy {
+                    src: then_val,
+                    dst: out_val.clone(),
+                });
+                instructions.push(Instruction::Jump(end_label.clone()));
+                instructions.push(Instruction::Label(else_label));
+                let (else_instructions, else_val) = else_branch.to_tacky();
+                instructions.extend(else_instructions);
+                instructions.push(Instruction::Copy {
+                    src: else_val,
+                    dst: out_val.clone(),
+                });
+                instructions.push(Instruction::Label(end_label));
+                (instructions, out_val)
+            }
         }
     }
 }

@@ -37,6 +37,11 @@ pub struct Declaration {
 pub enum Statement {
     Return(Expression),
     Expression(Expression),
+    If {
+        condition: Expression,
+        then_branch: Box<Statement>,
+        else_branch: Option<Box<Statement>>,
+    },
     Null,
 }
 
@@ -51,6 +56,11 @@ pub enum Expression {
     Assignment {
         left: Box<Expression>,
         right: Box<Expression>,
+    },
+    Conditional {
+        condition: Box<Expression>,
+        then_branch: Box<Expression>,
+        else_branch: Box<Expression>,
     },
 }
 
@@ -241,6 +251,27 @@ impl ToAst for Statement {
                 expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
                 Ok(Statement::Return(expr))
             }
+            Some(Token(TokenType::Keyword(Keyword::If), _)) => {
+                tokens.next(); // Consume the 'if' token
+                expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
+                let condition = Expression::to_ast(tokens)?;
+                expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
+                let then_branch = Box::new(Statement::to_ast(tokens)?);
+                let else_branch = if matches!(
+                    tokens.peek(),
+                    Some(Token(TokenType::Keyword(Keyword::Else), _))
+                ) {
+                    tokens.next(); // Consume the 'else' token
+                    Some(Box::new(Statement::to_ast(tokens)?))
+                } else {
+                    None
+                };
+                Ok(Statement::If {
+                    condition,
+                    then_branch,
+                    else_branch,
+                })
+            }
             Some(Token(TokenType::Symbol(Symbol::Semicolon), _)) => {
                 tokens.next(); // Consume the ';'
                 Ok(Statement::Null)
@@ -270,11 +301,22 @@ impl Expression {
             };
 
             if Self::associativity(op) == Associativity::RightToLeft {
-                let right = Self::parse_min_prec(tokens, Self::get_precedence(op).unwrap())?;
-                left = Expression::Assignment {
-                    left: Box::new(left.clone()),
-                    right: Box::new(Self::op_to_assignment(op, left, right)),
-                };
+                if op == Symbol::Question {
+                    let middle = Self::parse_min_prec(tokens, 0)?;
+                    expect_token!(tokens, TokenType::Symbol(Symbol::Colon), "':'");
+                    let right = Self::parse_min_prec(tokens, Self::get_precedence(op).unwrap())?;
+                    left = Expression::Conditional {
+                        condition: Box::new(left),
+                        then_branch: Box::new(middle),
+                        else_branch: Box::new(right),
+                    };
+                } else {
+                    let right = Self::parse_min_prec(tokens, Self::get_precedence(op).unwrap())?;
+                    left = Expression::Assignment {
+                        left: Box::new(left.clone()),
+                        right: Box::new(Self::op_to_assignment(op, left, right)),
+                    };
+                }
             } else {
                 let right = Self::parse_min_prec(tokens, Self::get_precedence(op).unwrap() + 1)?;
                 left = Expression::BinaryOp {
@@ -322,6 +364,7 @@ impl Expression {
             Symbol::Bar => Some(15),
             Symbol::DoubleAmp => Some(10),
             Symbol::DoubleBar => Some(5),
+            Symbol::Question => Some(3),
             Symbol::Equal
             | Symbol::PlusEqual
             | Symbol::MinusEqual
@@ -349,7 +392,8 @@ impl Expression {
             | Symbol::BarEqual
             | Symbol::HatEqual
             | Symbol::DoubleLtEqual
-            | Symbol::DoubleGtEqual => Associativity::RightToLeft,
+            | Symbol::DoubleGtEqual
+            | Symbol::Question => Associativity::RightToLeft,
             _ => Associativity::LeftToRight,
         }
     }

@@ -32,6 +32,8 @@ pub enum Keyword {
     Int,
     Void,
     Return,
+    If,
+    Else,
 }
 
 impl TryFrom<&String> for Keyword {
@@ -42,6 +44,8 @@ impl TryFrom<&String> for Keyword {
             "int" => Ok(Keyword::Int),
             "void" => Ok(Keyword::Void),
             "return" => Ok(Keyword::Return),
+            "if" => Ok(Keyword::If),
+            "else" => Ok(Keyword::Else),
             _ => Err(()),
         }
     }
@@ -91,6 +95,9 @@ pub enum Symbol {
     AmpersandEqual, // &=
     BarEqual,       // |=
     HatEqual,       // ^=
+
+    Question, // ?
+    Colon,    // :
 }
 
 #[derive(Debug, Clone)]
@@ -351,6 +358,8 @@ where
                             Symbol::GreaterThan
                         }
                     }
+                    '?' => Symbol::Question,
+                    ':' => Symbol::Colon,
                     _ => {
                         return Err(LexerError::UnknownToken {
                             line: line_number,

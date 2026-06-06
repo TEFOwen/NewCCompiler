@@ -2,8 +2,11 @@
 <function> ::= "int" <identifier> "(" "void" ")" "{" {<block-item>} "}"
 <block-item> ::= <statement> | <declaration>
 <declaration> ::= "int" <identifier> ["=" <exp>] ";"
-<statement> ::= "return" <exp> ";" | <exp> ";" | ";"
-<exp> ::= <factor> | <exp> <binop> <exp>
+<statement> ::= "return" <exp> ";"
+                | "if" "(" <exp> ")" <statement> ["else" <statement>]
+                | <exp> ";"
+                | ";"
+<exp> ::= <factor> | <exp> <binop> <exp> | <exp> "?" <exp> ":" <exp>
 <factor> ::= <unop> <factor> | <postfix>
 <postfix> ::= <primary> { <postfix-op> }
 <primary> ::= <int> | <identifier> | "(" <exp> ")"
