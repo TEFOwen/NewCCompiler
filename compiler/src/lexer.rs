@@ -34,6 +34,7 @@ pub enum Keyword {
     Return,
     If,
     Else,
+    Goto,
 }
 
 impl TryFrom<&String> for Keyword {
@@ -46,6 +47,7 @@ impl TryFrom<&String> for Keyword {
             "return" => Ok(Keyword::Return),
             "if" => Ok(Keyword::If),
             "else" => Ok(Keyword::Else),
+            "goto" => Ok(Keyword::Goto),
             _ => Err(()),
         }
     }

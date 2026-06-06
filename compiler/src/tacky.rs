@@ -169,6 +169,14 @@ impl ToTacky for parser::Statement {
 
                 instructions
             }
+            parser::Statement::Labeled(label, statement) => {
+                let mut instructions = vec![Instruction::Label(label)];
+                instructions.extend(statement.to_tacky());
+                instructions
+            }
+            parser::Statement::Goto(label) => {
+                vec![Instruction::Jump(label)]
+            }
         }
     }
 }

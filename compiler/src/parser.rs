@@ -1,6 +1,5 @@
-use std::iter::Peekable;
-
 use crate::lexer::{Keyword, Symbol, Token, TokenType};
+use itertools::{Itertools, MultiPeek};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -36,6 +35,8 @@ pub struct Declaration {
 #[derive(Debug, Clone)]
 pub enum Statement {
     Return(Expression),
+    Labeled(String, Box<Statement>),
+    Goto(String),
     Expression(Expression),
     If {
         condition: Expression,
@@ -131,11 +132,11 @@ trait ToAst
 where
     Self: Sized,
 {
-    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError>;
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError>;
 }
 
 pub fn parse(tokens: Vec<Token>) -> Result<Program, ParserError> {
-    let mut tokens = tokens.into_iter().peekable();
+    let mut tokens = tokens.into_iter().multipeek();
     Program::to_ast(&mut tokens)
 }
 
@@ -157,7 +158,7 @@ macro_rules! expect_token {
 }
 
 impl ToAst for Program {
-    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         let funcdef = FuncDef::to_ast(tokens)?;
         if let Some(token) = tokens.next() {
             if token.0 != TokenType::EndOfFile {
@@ -173,7 +174,7 @@ impl ToAst for Program {
 }
 
 impl ToAst for FuncDef {
-    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         expect_token!(tokens, TokenType::Keyword(Keyword::Int), "int");
         let Token(TokenType::Identifier(name), _) =
             expect_token!(tokens, TokenType::Identifier(_), "function name")
@@ -191,6 +192,7 @@ impl ToAst for FuncDef {
             tokens.peek(),
             Some(Token(TokenType::Symbol(Symbol::CloseBrace), _))
         ) {
+            tokens.reset_peek();
             let block_item = BlockItem::to_ast(tokens)?;
             body.push(block_item);
         }
@@ -202,20 +204,22 @@ impl ToAst for FuncDef {
 }
 
 impl ToAst for BlockItem {
-    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         if matches!(
             tokens.peek(),
             Some(Token(TokenType::Keyword(Keyword::Int), _))
         ) {
+            tokens.reset_peek();
             Ok(BlockItem::Declaration(Declaration::to_ast(tokens)?))
         } else {
+            tokens.reset_peek();
             Ok(BlockItem::Statement(Statement::to_ast(tokens)?))
         }
     }
 }
 
 impl ToAst for Declaration {
-    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         expect_token!(tokens, TokenType::Keyword(Keyword::Int), "int");
         let Token(TokenType::Identifier(identifier), _) =
             expect_token!(tokens, TokenType::Identifier(_), "variable name")
@@ -243,13 +247,41 @@ impl ToAst for Declaration {
 }
 
 impl ToAst for Statement {
-    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         match tokens.peek() {
             Some(Token(TokenType::Keyword(Keyword::Return), _)) => {
                 tokens.next(); // Consume the 'return' token
                 let expr = Expression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
                 Ok(Statement::Return(expr))
+            }
+            Some(Token(TokenType::Identifier(_), _)) => {
+                if matches!(
+                    tokens.peek(),
+                    Some(Token(TokenType::Symbol(Symbol::Colon), _))
+                ) {
+                    let Token(TokenType::Identifier(identifier), _) = tokens.next().unwrap() else {
+                        unreachable!()
+                    };
+                    expect_token!(tokens, TokenType::Symbol(Symbol::Colon), "':'");
+                    let stmt = Statement::to_ast(tokens)?;
+                    Ok(Statement::Labeled(identifier.clone(), Box::new(stmt)))
+                } else {
+                    tokens.reset_peek();
+                    let expr = Expression::to_ast(tokens)?;
+                    expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
+                    Ok(Statement::Expression(expr))
+                }
+            }
+            Some(Token(TokenType::Keyword(Keyword::Goto), _)) => {
+                tokens.next(); // Consume the 'goto' token
+                let Token(TokenType::Identifier(label), _) =
+                    expect_token!(tokens, TokenType::Identifier(_), "label name")
+                else {
+                    unreachable!()
+                };
+                expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
+                Ok(Statement::Goto(label))
             }
             Some(Token(TokenType::Keyword(Keyword::If), _)) => {
                 tokens.next(); // Consume the 'if' token
@@ -266,6 +298,9 @@ impl ToAst for Statement {
                 } else {
                     None
                 };
+
+                tokens.reset_peek();
+
                 Ok(Statement::If {
                     condition,
                     then_branch,
@@ -277,6 +312,7 @@ impl ToAst for Statement {
                 Ok(Statement::Null)
             }
             Some(_) => {
+                tokens.reset_peek();
                 let expr = Expression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
                 Ok(Statement::Expression(expr))
@@ -288,7 +324,7 @@ impl ToAst for Statement {
 
 impl Expression {
     fn parse_min_prec(
-        tokens: &mut Peekable<impl Iterator<Item = Token>>,
+        tokens: &mut MultiPeek<impl Iterator<Item = Token>>,
         min_prec: i32,
     ) -> Result<Self, ParserError> {
         let mut left = Expression::Factor(Factor::to_ast(tokens)?);
@@ -346,6 +382,8 @@ impl Expression {
                 };
             }
         }
+
+        tokens.reset_peek();
 
         Ok(left)
     }
@@ -457,13 +495,13 @@ impl Expression {
 }
 
 impl ToAst for Expression {
-    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         Self::parse_min_prec(tokens, 0)
     }
 }
 
 impl ToAst for Factor {
-    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         if matches!(
             tokens.peek(),
             Some(Token(
@@ -494,13 +532,14 @@ impl ToAst for Factor {
                 fac: Box::new(inner),
             })
         } else {
+            tokens.reset_peek();
             Postfix::to_ast(tokens).map(Factor::Postfix)
         }
     }
 }
 
 impl ToAst for Postfix {
-    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         let primary = Primary::to_ast(tokens)?;
         let mut postfix = Vec::new();
         while matches!(
@@ -520,12 +559,13 @@ impl ToAst for Postfix {
                 _ => unreachable!(),
             });
         }
+        tokens.reset_peek();
         Ok(Postfix { primary, postfix })
     }
 }
 
 impl ToAst for Primary {
-    fn to_ast(tokens: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         let Token(token_type, _) = expect_token!(
             tokens,
             TokenType::Constant(_)
