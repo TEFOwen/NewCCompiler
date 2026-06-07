@@ -112,15 +112,23 @@ impl ToTacky for parser::FuncDef {
     type Output = FuncDef;
 
     fn to_tacky(self) -> Self::Output {
+        let mut body = self.body.to_tacky();
+        body.push(Instruction::Return(Value::Constant(0)));
         FuncDef {
             name: self.name,
-            body: self
-                .body
-                .into_iter()
-                .flat_map(|s| s.to_tacky())
-                .chain(std::iter::once(Instruction::Return(Value::Constant(0))))
-                .collect(),
+            body,
         }
+    }
+}
+
+impl ToTacky for parser::Block {
+    type Output = Vec<Instruction>;
+
+    fn to_tacky(self) -> Self::Output {
+        self.0
+            .into_iter()
+            .flat_map(|item| item.to_tacky())
+            .collect()
     }
 }
 
@@ -169,6 +177,7 @@ impl ToTacky for parser::Statement {
 
                 instructions
             }
+            parser::Statement::Block(block) => block.to_tacky(),
             parser::Statement::Labeled(label, statement) => {
                 let mut instructions = vec![Instruction::Label(label)];
                 instructions.extend(statement.to_tacky());

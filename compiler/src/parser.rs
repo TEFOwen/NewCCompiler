@@ -17,8 +17,11 @@ pub struct Program(pub FuncDef);
 #[derive(Debug, Clone)]
 pub struct FuncDef {
     pub name: String,
-    pub body: Vec<BlockItem>,
+    pub body: Block,
 }
+
+#[derive(Debug, Clone)]
+pub struct Block(pub Vec<BlockItem>);
 
 #[derive(Debug, Clone)]
 pub enum BlockItem {
@@ -43,6 +46,7 @@ pub enum Statement {
         then_branch: Box<Statement>,
         else_branch: Option<Box<Statement>>,
     },
+    Block(Block),
     Null,
 }
 
@@ -185,21 +189,27 @@ impl ToAst for FuncDef {
         expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
         expect_token!(tokens, TokenType::Keyword(Keyword::Void), "void");
         expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
-        expect_token!(tokens, TokenType::Symbol(Symbol::OpenBrace), "'{'");
 
-        let mut body = Vec::new();
+        Ok(FuncDef {
+            name,
+            body: Block::to_ast(tokens)?,
+        })
+    }
+}
+
+impl ToAst for Block {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+        expect_token!(tokens, TokenType::Symbol(Symbol::OpenBrace), "'{'");
+        let mut items = Vec::new();
         while !matches!(
             tokens.peek(),
             Some(Token(TokenType::Symbol(Symbol::CloseBrace), _))
         ) {
             tokens.reset_peek();
-            let block_item = BlockItem::to_ast(tokens)?;
-            body.push(block_item);
+            items.push(BlockItem::to_ast(tokens)?);
         }
-
         expect_token!(tokens, TokenType::Symbol(Symbol::CloseBrace), "'}'");
-
-        Ok(FuncDef { name, body })
+        Ok(Block(items))
     }
 }
 
@@ -306,6 +316,10 @@ impl ToAst for Statement {
                     then_branch,
                     else_branch,
                 })
+            }
+            Some(Token(TokenType::Symbol(Symbol::OpenBrace), _)) => {
+                tokens.reset_peek();
+                Ok(Statement::Block(Block::to_ast(tokens)?))
             }
             Some(Token(TokenType::Symbol(Symbol::Semicolon), _)) => {
                 tokens.next(); // Consume the ';'

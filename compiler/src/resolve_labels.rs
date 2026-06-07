@@ -32,12 +32,19 @@ impl CollectLabels for parser::FuncDef {
     fn collect_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
         Ok(parser::FuncDef {
             name: self.name,
-            body: self
-                .body
-                .into_iter()
-                .map(|stmt| stmt.collect_labels(labels))
-                .collect::<Result<_, _>>()?,
+            body: self.body.collect_labels(labels)?,
         })
+    }
+}
+
+impl CollectLabels for parser::Block {
+    fn collect_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
+        Ok(parser::Block(
+            self.0
+                .into_iter()
+                .map(|item| item.collect_labels(labels))
+                .collect::<Result<_, _>>()?,
+        ))
     }
 }
 
@@ -75,6 +82,7 @@ impl CollectLabels for parser::Statement {
                     .transpose()?
                     .map(Box::new),
             }),
+            Self::Block(block) => block.collect_labels(labels).map(Self::Block),
             stmt => Ok(stmt),
         }
     }
@@ -97,12 +105,19 @@ impl ResolveLabels for parser::FuncDef {
     fn resolve_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
         Ok(parser::FuncDef {
             name: self.name,
-            body: self
-                .body
-                .into_iter()
-                .map(|stmt| stmt.resolve_labels(labels))
-                .collect::<Result<_, _>>()?,
+            body: self.body.resolve_labels(labels)?,
         })
+    }
+}
+
+impl ResolveLabels for parser::Block {
+    fn resolve_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
+        Ok(parser::Block(
+            self.0
+                .into_iter()
+                .map(|item| item.resolve_labels(labels))
+                .collect::<Result<_, _>>()?,
+        ))
     }
 }
 
@@ -141,6 +156,7 @@ impl ResolveLabels for parser::Statement {
                     .transpose()?
                     .map(Box::new),
             }),
+            parser::Statement::Block(block) => block.resolve_labels(labels).map(Self::Block),
             stmt => Ok(stmt),
         }
     }

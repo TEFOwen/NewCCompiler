@@ -60,14 +60,21 @@ impl ResolveLvalues for parser::Program {
 
 impl ResolveLvalues for parser::FuncDef {
     fn resolve_lvalues(self) -> Result<Self, SemanticError> {
-        self.body
-            .into_iter()
-            .map(|stmt| stmt.resolve_lvalues())
-            .collect::<Result<_, _>>()
-            .map(|body| parser::FuncDef {
-                name: self.name,
-                body,
-            })
+        self.body.resolve_lvalues().map(|body| parser::FuncDef {
+            name: self.name,
+            body,
+        })
+    }
+}
+
+impl ResolveLvalues for parser::Block {
+    fn resolve_lvalues(self) -> Result<Self, SemanticError> {
+        Ok(parser::Block(
+            self.0
+                .into_iter()
+                .map(|item| item.resolve_lvalues())
+                .collect::<Result<_, _>>()?,
+        ))
     }
 }
 
@@ -103,6 +110,7 @@ impl ResolveLvalues for parser::Statement {
                     .transpose()?
                     .map(Box::new),
             }),
+            Self::Block(block) => block.resolve_lvalues().map(Self::Block),
             Self::Null => Ok(Self::Null),
         }
     }
