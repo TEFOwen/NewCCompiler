@@ -11,8 +11,8 @@ use clap::{Args, Parser};
 #[command(name = "compiler_driver")]
 #[command(about = "A simple compiler driver", long_about = None)]
 struct Cli {
-    #[clap(help = "Input C source file")]
-    input: PathBuf,
+    #[clap(help = "Input C source file(s)", required = true)]
+    input: Vec<PathBuf>,
 
     #[command(flatten)]
     compile_options: CompileOptions,
@@ -21,15 +21,14 @@ struct Cli {
 #[derive(Args)]
 #[group(required = false, multiple = false)]
 struct CompileOptions {
-    #[clap(long, short, action, help = "Run only the lexer")]
+    #[clap(long, action, help = "Run only the lexer")]
     lex: bool,
 
-    #[clap(long, short, action, help = "Run only the lexer and parser")]
+    #[clap(long, action, help = "Run only the lexer and parser")]
     parse: bool,
 
     #[clap(
         long,
-        short,
         action,
         help = "Run only semantic analysis (no TACKY IR generated)"
     )]
@@ -37,7 +36,6 @@ struct CompileOptions {
 
     #[clap(
         long,
-        short,
         action,
         help = "Run only TACKY intermediate representation generation"
     )]
@@ -45,7 +43,6 @@ struct CompileOptions {
 
     #[clap(
         long,
-        short,
         action,
         help = "Run only the lexer, parser, and assembly generation (no assembly written to file)"
     )]
@@ -57,12 +54,19 @@ struct CompileOptions {
         help = "Only generate assembly, do not assemble or link"
     )]
     assemble: bool,
+
+    #[clap(
+        short = 'c',
+        action,
+        help = "Only compile and assemble, do not link (no executable generated)"
+    )]
+    nolink: bool,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Cli::parse();
-
-    let input_path = args.input;
+fn compile_file(
+    input_path: &PathBuf,
+    compile_options: &CompileOptions,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     let preprocessed_path = input_path.with_extension("i");
     assert!(
         Command::new("gcc")
@@ -94,13 +98,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Warning: failed to remove preprocessed file: {}", e);
     }
 
-    if args.compile_options.lex {
+    if compile_options.lex {
         print!("Tokens: [ ");
         for compiler::lexer::Token(token_type, _) in &tokens {
             print!("{:?} ", token_type);
         }
         println!("]");
-        return Ok(());
+        return Ok(None);
     }
 
     let ast = match compiler::parser::parse(tokens) {
@@ -111,16 +115,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    if args.compile_options.parse {
+    if compile_options.parse {
         println!("AST: {:#?}", ast);
-        return Ok(());
+        return Ok(None);
     }
 
     let resolved_ast = match compiler::semantic_analysis::resolve_program(ast) {
         Ok(resolved_ast) => {
-            if args.compile_options.validate {
+            if compile_options.validate {
                 println!("Semantic analysis successful: {:#?}", resolved_ast);
-                return Ok(());
+                return Ok(None);
             }
             resolved_ast
         }
@@ -132,44 +136,105 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tacky = compiler::tacky::ToTacky::to_tacky(resolved_ast);
 
-    if args.compile_options.tacky {
+    if compile_options.tacky {
         println!("TACKY IR: {:#?}", tacky);
-        return Ok(());
+        return Ok(None);
     }
 
     let assembly = compiler::codegen::to_assembly(tacky);
 
-    if args.compile_options.codegen {
+    if compile_options.codegen {
         println!("Assembly: {:#?}", assembly);
-        return Ok(());
+        return Ok(None);
     }
 
     let assembly_path = input_path.with_extension("s");
     let assembly_file = File::create(&assembly_path)?;
     compiler::codeemission::EmitCode::emit_code(&assembly, assembly_file)?;
 
-    if args.compile_options.assemble {
+    if compile_options.assemble {
         println!("Assembly written to: {}", assembly_path.to_str().unwrap());
-        return Ok(());
     }
 
-    let output_path = input_path.with_extension("");
-    assert!(
-        Command::new("gcc")
-            .args(&[
-                assembly_path.to_str().unwrap(),
-                "-o",
-                output_path.to_str().unwrap(),
-            ])
-            .status()?
-            .success()
-    );
+    Ok(Some(assembly_path))
+}
 
-    if let Err(e) = remove_file(assembly_path) {
-        eprintln!("Warning: failed to remove assembly file: {}", e);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Cli::parse();
+
+    if args.input.len() == 0 {
+        eprintln!("Error: no input files provided");
+        std::process::exit(1);
     }
 
-    println!("Executable written to: {}", output_path.to_str().unwrap());
+    let mut assembly_paths = Vec::new();
+    for input_path in &args.input {
+        match compile_file(input_path, &args.compile_options) {
+            Err(e) => {
+                eprintln!("Error compiling {}: {}", input_path.to_str().unwrap(), e);
+                std::process::exit(1);
+            }
+            Ok(Some(assembly_path)) => assembly_paths.push(assembly_path),
+            _ => {}
+        }
+    }
+
+    if args.compile_options.nolink {
+        let mut failed = false;
+        for assembly_path in assembly_paths {
+            let output_path = assembly_path.with_extension("o");
+            if !Command::new("gcc")
+                .args(&[
+                    "-c",
+                    assembly_path.to_str().unwrap(),
+                    "-o",
+                    output_path.to_str().unwrap(),
+                ])
+                .status()?
+                .success()
+            {
+                eprintln!(
+                    "Error assembling {}: gcc failed",
+                    assembly_path.to_str().unwrap()
+                );
+                failed = true;
+            } else {
+                println!("Object file written to: {}", output_path.to_str().unwrap());
+            }
+
+            if let Err(e) = remove_file(assembly_path) {
+                eprintln!("Warning: failed to remove assembly file: {}", e);
+            }
+        }
+        if failed {
+            std::process::exit(1);
+        }
+    } else {
+        let output_path = assembly_paths[0].with_extension("");
+
+        let mut gcc_args = assembly_paths
+            .iter()
+            .map(|assembly_path| assembly_path.to_str().unwrap())
+            .collect::<Vec<_>>();
+        gcc_args.push("-o");
+        gcc_args.push(output_path.to_str().unwrap());
+        let success = Command::new("gcc").args(&gcc_args).status()?.success();
+
+        if success {
+            println!("Executable written to: {}", output_path.to_str().unwrap());
+        }
+
+        for assembly_path in assembly_paths {
+            if let Err(e) = remove_file(assembly_path) {
+                eprintln!("Warning: failed to remove assembly file: {}", e);
+            }
+        }
+
+        if !success {
+            eprintln!("Error linking: gcc failed");
+            std::process::exit(1);
+        }
+    }
 
     Ok(())
 }
