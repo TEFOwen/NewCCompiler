@@ -8,8 +8,14 @@
                 | "goto" <identifier> ";"
                 | "if" "(" <exp> ")" <statement> ["else" <statement>]
                 | <block>
+                | break ";"
+                | continue ";"
+                | "while" "(" <exp> ")" <statement>
+                | "do" <statement> "while" "(" <exp> ")" ";"
+                | "for" "(" <for-init> [<exp>] ";" [<exp>] ")" <statement>
                 | <exp> ";"
                 | ";"
+<for-init> ::= <declaration> | [<exp>] ";"
 <exp> ::= <factor> | <exp> <binop> <exp> | <exp> "?" <exp> ":" <exp>
 <factor> ::= <unop> <factor> | <postfix>
 <postfix> ::= <primary> { <postfix-op> }

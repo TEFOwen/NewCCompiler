@@ -9,7 +9,13 @@ statement = Return(exp)
         | Expression(exp)
         | If(exp condition, statement then, statement? else)
         | Compound(block)
+        | Break
+        | Continue
+        | While(exp condition, statement body)
+        | DoWhile(statement body, exp condition)
+        | For(for_init init, exp? condition, exp? post, statement body)
         | Null
+for_init = InitDecl(declaration) | InitExp(exp?)
 exp = Constant(int)
     | Var(identifier)
     | Unary(unary_operator, exp)

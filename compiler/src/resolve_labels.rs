@@ -83,7 +83,43 @@ impl CollectLabels for parser::Statement {
                     .map(Box::new),
             }),
             Self::Block(block) => block.collect_labels(labels).map(Self::Block),
-            stmt => Ok(stmt),
+            parser::Statement::While {
+                condition,
+                body,
+                label,
+            } => Ok(Self::While {
+                condition,
+                body: Box::new(body.collect_labels(labels)?),
+                label,
+            }),
+            parser::Statement::DoWhile {
+                body,
+                condition,
+                label,
+            } => Ok(Self::DoWhile {
+                body: Box::new(body.collect_labels(labels)?),
+                condition,
+                label,
+            }),
+            parser::Statement::For {
+                init,
+                condition,
+                post,
+                body,
+                label,
+            } => Ok(Self::For {
+                init,
+                condition,
+                post,
+                body: Box::new(body.collect_labels(labels)?),
+                label,
+            }),
+            parser::Statement::Goto(_)
+            | parser::Statement::Expression(_)
+            | parser::Statement::Break(_)
+            | parser::Statement::Continue(_)
+            | parser::Statement::Return(_)
+            | parser::Statement::Null => Ok(self),
         }
     }
 }
@@ -133,7 +169,7 @@ impl ResolveLabels for parser::BlockItem {
 impl ResolveLabels for parser::Statement {
     fn resolve_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
         match self {
-            Self::Goto(label) => match labels.get(&label) {
+            parser::Statement::Goto(label) => match labels.get(&label) {
                 Some(unique_label) => {
                     return Ok(Self::Goto(unique_label.clone()));
                 }
@@ -157,7 +193,42 @@ impl ResolveLabels for parser::Statement {
                     .map(Box::new),
             }),
             parser::Statement::Block(block) => block.resolve_labels(labels).map(Self::Block),
-            stmt => Ok(stmt),
+            parser::Statement::While {
+                condition,
+                body,
+                label,
+            } => Ok(Self::While {
+                condition,
+                body: Box::new(body.resolve_labels(labels)?),
+                label,
+            }),
+            parser::Statement::DoWhile {
+                body,
+                condition,
+                label,
+            } => Ok(Self::DoWhile {
+                body: Box::new(body.resolve_labels(labels)?),
+                condition,
+                label,
+            }),
+            parser::Statement::For {
+                init,
+                condition,
+                post,
+                body,
+                label,
+            } => Ok(Self::For {
+                init,
+                condition,
+                post,
+                body: Box::new(body.resolve_labels(labels)?),
+                label,
+            }),
+            parser::Statement::Return(_)
+            | parser::Statement::Break(_)
+            | parser::Statement::Continue(_)
+            | parser::Statement::Expression(_)
+            | parser::Statement::Null => Ok(self),
         }
     }
 }

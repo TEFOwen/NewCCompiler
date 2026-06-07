@@ -186,6 +186,105 @@ impl ToTacky for parser::Statement {
             parser::Statement::Goto(label) => {
                 vec![Instruction::Jump(label)]
             }
+            parser::Statement::Break(label) => {
+                vec![Instruction::Jump(format!(
+                    "{}.break",
+                    label.expect("Loops have not been resolved")
+                ))]
+            }
+            parser::Statement::Continue(label) => {
+                vec![Instruction::Jump(format!(
+                    "{}.continue",
+                    label.expect("Loops have not been resolved")
+                ))]
+            }
+            parser::Statement::While {
+                condition,
+                body,
+                label,
+            } => {
+                let label = label.clone().expect("Loops have not been resolved");
+                let continue_label = format!("{}.continue", label);
+                let break_label = format!("{}.break", label);
+
+                let mut instructions = vec![Instruction::Label(continue_label.clone())];
+                let (cond_instructions, cond) = condition.to_tacky();
+                instructions.extend(cond_instructions);
+                instructions.push(Instruction::JumpIfZero {
+                    val: cond,
+                    target: break_label.clone(),
+                });
+                instructions.extend(body.to_tacky());
+                instructions.push(Instruction::Jump(continue_label));
+                instructions.push(Instruction::Label(break_label));
+                instructions
+            }
+            parser::Statement::DoWhile {
+                body,
+                condition,
+                label,
+            } => {
+                let label = label.clone().expect("Loops have not been resolved");
+                let start_label = format!("{}.start", label);
+                let continue_label = format!("{}.continue", label);
+                let break_label = format!("{}.break", label);
+
+                let mut instructions = vec![Instruction::Label(start_label.clone())];
+                instructions.extend(body.to_tacky());
+                instructions.push(Instruction::Label(continue_label));
+                let (cond_instructions, cond) = condition.to_tacky();
+                instructions.extend(cond_instructions);
+                instructions.push(Instruction::JumpIfNotZero {
+                    val: cond,
+                    target: start_label,
+                });
+                instructions.push(Instruction::Label(break_label));
+                instructions
+            }
+            parser::Statement::For {
+                init,
+                condition,
+                post,
+                body,
+                label,
+            } => {
+                let label = label.clone().expect("Loops have not been resolved");
+                let start_label = format!("{}.start", label);
+                let continue_label = format!("{}.continue", label);
+                let break_label = format!("{}.break", label);
+
+                let mut instructions = init.to_tacky();
+                instructions.push(Instruction::Label(start_label.clone()));
+                if let Some(condition) = condition {
+                    let (cond_instructions, cond) = condition.to_tacky();
+                    instructions.extend(cond_instructions);
+                    instructions.push(Instruction::JumpIfZero {
+                        val: cond,
+                        target: break_label.clone(),
+                    });
+                }
+                instructions.extend(body.to_tacky());
+                instructions.push(Instruction::Label(continue_label.clone()));
+                if let Some(post) = post {
+                    instructions.extend(post.to_tacky().0);
+                }
+                instructions.push(Instruction::Jump(start_label));
+                instructions.push(Instruction::Label(break_label));
+                instructions
+            }
+        }
+    }
+}
+
+impl ToTacky for parser::InitExp {
+    type Output = Vec<Instruction>;
+
+    fn to_tacky(self) -> Self::Output {
+        match self {
+            parser::InitExp::Declaration(declaration) => declaration.to_tacky(),
+            parser::InitExp::Expression(expression) => expression
+                .map(|expr| expr.to_tacky().0)
+                .unwrap_or_else(Vec::new),
         }
     }
 }

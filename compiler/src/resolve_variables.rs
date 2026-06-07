@@ -118,18 +118,17 @@ impl ResolveVariables for parser::Statement {
         defined_in_this_scope: &mut HashSet<String>,
     ) -> Result<Self, SemanticError> {
         match self {
-            parser::Statement::Return(exp) => Ok(Self::Return(
+            parser::Statement::Return(exp) => Ok(parser::Statement::Return(
                 exp.resolve_variables(variables, defined_in_this_scope)?,
             )),
-            parser::Statement::Expression(exp) => Ok(Self::Expression(
+            parser::Statement::Expression(exp) => Ok(parser::Statement::Expression(
                 exp.resolve_variables(variables, defined_in_this_scope)?,
             )),
-            parser::Statement::Null => Ok(Self::Null),
             parser::Statement::If {
                 condition,
                 then_branch,
                 else_branch,
-            } => Ok(Self::If {
+            } => Ok(parser::Statement::If {
                 condition: condition.resolve_variables(variables, defined_in_this_scope)?,
                 then_branch: Box::new(
                     then_branch.resolve_variables(variables, defined_in_this_scope)?,
@@ -143,12 +142,78 @@ impl ResolveVariables for parser::Statement {
             }),
             parser::Statement::Block(block) => block
                 .resolve_variables(variables, defined_in_this_scope)
-                .map(Self::Block),
-            parser::Statement::Labeled(label, statement) => Ok(Self::Labeled(
+                .map(parser::Statement::Block),
+            parser::Statement::Labeled(label, statement) => Ok(parser::Statement::Labeled(
                 label,
                 Box::new(statement.resolve_variables(variables, defined_in_this_scope)?),
             )),
-            parser::Statement::Goto(label) => Ok(Self::Goto(label)),
+            parser::Statement::While {
+                condition,
+                body,
+                label,
+            } => Ok(parser::Statement::While {
+                condition: condition.resolve_variables(variables, defined_in_this_scope)?,
+                body: Box::new(body.resolve_variables(variables, defined_in_this_scope)?),
+                label,
+            }),
+            parser::Statement::DoWhile {
+                body,
+                condition,
+                label,
+            } => Ok(parser::Statement::DoWhile {
+                body: Box::new(body.resolve_variables(variables, defined_in_this_scope)?),
+                condition: condition.resolve_variables(variables, defined_in_this_scope)?,
+                label,
+            }),
+            parser::Statement::For {
+                init,
+                condition,
+                post,
+                body,
+                label,
+            } => {
+                let mut variables = variables.clone();
+                let mut defined_in_this_scope: HashSet<String> = HashSet::new();
+                Ok(parser::Statement::For {
+                    init: init.resolve_variables(&mut variables, &mut defined_in_this_scope)?,
+                    condition: condition
+                        .map(|cond| {
+                            cond.resolve_variables(&mut variables, &mut defined_in_this_scope)
+                        })
+                        .transpose()?,
+                    post: post
+                        .map(|post| {
+                            post.resolve_variables(&mut variables, &mut defined_in_this_scope)
+                        })
+                        .transpose()?,
+                    body: Box::new(
+                        body.resolve_variables(&mut variables, &mut defined_in_this_scope)?,
+                    ),
+                    label,
+                })
+            }
+            parser::Statement::Null
+            | parser::Statement::Goto(_)
+            | parser::Statement::Break(_)
+            | parser::Statement::Continue(_) => Ok(self),
+        }
+    }
+}
+
+impl ResolveVariables for parser::InitExp {
+    fn resolve_variables(
+        self,
+        variables: &mut HashMap<String, String>,
+        defined_in_this_scope: &mut HashSet<String>,
+    ) -> Result<Self, SemanticError> {
+        match self {
+            parser::InitExp::Declaration(declaration) => declaration
+                .resolve_variables(variables, defined_in_this_scope)
+                .map(parser::InitExp::Declaration),
+            parser::InitExp::Expression(expression) => expression
+                .map(|exp| exp.resolve_variables(variables, defined_in_this_scope))
+                .transpose()
+                .map(parser::InitExp::Expression),
         }
     }
 }

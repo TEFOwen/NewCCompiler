@@ -35,6 +35,11 @@ pub enum Keyword {
     If,
     Else,
     Goto,
+    Do,
+    While,
+    For,
+    Break,
+    Continue,
 }
 
 impl TryFrom<&String> for Keyword {
@@ -48,6 +53,11 @@ impl TryFrom<&String> for Keyword {
             "if" => Ok(Keyword::If),
             "else" => Ok(Keyword::Else),
             "goto" => Ok(Keyword::Goto),
+            "do" => Ok(Keyword::Do),
+            "while" => Ok(Keyword::While),
+            "for" => Ok(Keyword::For),
+            "break" => Ok(Keyword::Break),
+            "continue" => Ok(Keyword::Continue),
             _ => Err(()),
         }
     }

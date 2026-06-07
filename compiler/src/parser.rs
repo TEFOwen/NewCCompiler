@@ -46,8 +46,33 @@ pub enum Statement {
         then_branch: Box<Statement>,
         else_branch: Option<Box<Statement>>,
     },
+    Break(Option<String>),
+    Continue(Option<String>),
+    While {
+        condition: Expression,
+        body: Box<Statement>,
+        label: Option<String>,
+    },
+    DoWhile {
+        body: Box<Statement>,
+        condition: Expression,
+        label: Option<String>,
+    },
+    For {
+        init: InitExp,
+        condition: Option<Expression>,
+        post: Option<Expression>,
+        body: Box<Statement>,
+        label: Option<String>,
+    },
     Block(Block),
     Null,
+}
+
+#[derive(Debug, Clone)]
+pub enum InitExp {
+    Declaration(Declaration),
+    Expression(Option<Expression>),
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +290,16 @@ impl ToAst for Statement {
                 expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
                 Ok(Statement::Return(expr))
             }
+            Some(Token(TokenType::Keyword(Keyword::Break), _)) => {
+                tokens.next(); // Consume the 'break' token
+                expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
+                Ok(Statement::Break(None))
+            }
+            Some(Token(TokenType::Keyword(Keyword::Continue), _)) => {
+                tokens.next(); // Consume the 'continue' token
+                expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
+                Ok(Statement::Continue(None))
+            }
             Some(Token(TokenType::Identifier(_), _)) => {
                 if matches!(
                     tokens.peek(),
@@ -315,6 +350,80 @@ impl ToAst for Statement {
                     condition,
                     then_branch,
                     else_branch,
+                })
+            }
+            Some(Token(TokenType::Keyword(Keyword::While), _)) => {
+                tokens.next(); // Consume the 'while' token
+                expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
+                let condition = Expression::to_ast(tokens)?;
+                expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
+                let body = Box::new(Statement::to_ast(tokens)?);
+                Ok(Statement::While {
+                    condition,
+                    body,
+                    label: None,
+                })
+            }
+            Some(Token(TokenType::Keyword(Keyword::Do), _)) => {
+                tokens.next(); // Consume the 'do' token
+                let body = Box::new(Statement::to_ast(tokens)?);
+                expect_token!(tokens, TokenType::Keyword(Keyword::While), "while");
+                expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
+                let condition = Expression::to_ast(tokens)?;
+                expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
+                expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
+                Ok(Statement::DoWhile {
+                    body,
+                    condition,
+                    label: None,
+                })
+            }
+            Some(Token(TokenType::Keyword(Keyword::For), _)) => {
+                tokens.next(); // Consume the 'for' token
+                expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
+                let init = match tokens.peek() {
+                    Some(Token(TokenType::Keyword(Keyword::Int), _)) => {
+                        tokens.reset_peek();
+                        InitExp::Declaration(Declaration::to_ast(tokens)?)
+                    }
+                    Some(Token(TokenType::Symbol(Symbol::Semicolon), _)) => {
+                        tokens.next(); // Consume the ';'
+                        InitExp::Expression(None)
+                    }
+                    _ => {
+                        tokens.reset_peek();
+                        let exp = InitExp::Expression(Some(Expression::to_ast(tokens)?));
+                        expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
+                        exp
+                    }
+                };
+                let condition = if !matches!(
+                    tokens.peek(),
+                    Some(Token(TokenType::Symbol(Symbol::Semicolon), _))
+                ) {
+                    tokens.reset_peek();
+                    Some(Expression::to_ast(tokens)?)
+                } else {
+                    None
+                };
+                expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
+                let post = if !matches!(
+                    tokens.peek(),
+                    Some(Token(TokenType::Symbol(Symbol::CloseParen), _))
+                ) {
+                    tokens.reset_peek();
+                    Some(Expression::to_ast(tokens)?)
+                } else {
+                    None
+                };
+                expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
+                let body = Box::new(Statement::to_ast(tokens)?);
+                Ok(Statement::For {
+                    init,
+                    condition,
+                    post,
+                    body,
+                    label: None,
                 })
             }
             Some(Token(TokenType::Symbol(Symbol::OpenBrace), _)) => {

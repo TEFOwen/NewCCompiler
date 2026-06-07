@@ -84,8 +84,16 @@ impl ResolveLvalues for parser::BlockItem {
             parser::BlockItem::Statement(statement) => {
                 Ok(Self::Statement(statement.resolve_lvalues()?))
             }
-            parser::BlockItem::Declaration(declaration) => Ok(Self::Declaration(declaration)),
+            parser::BlockItem::Declaration(declaration) => declaration
+                .resolve_lvalues()
+                .map(parser::BlockItem::Declaration),
         }
+    }
+}
+
+impl ResolveLvalues for parser::Declaration {
+    fn resolve_lvalues(self) -> Result<Self, SemanticError> {
+        Ok(self)
     }
 }
 
@@ -111,7 +119,54 @@ impl ResolveLvalues for parser::Statement {
                     .map(Box::new),
             }),
             Self::Block(block) => block.resolve_lvalues().map(Self::Block),
-            Self::Null => Ok(Self::Null),
+            parser::Statement::While {
+                condition,
+                body,
+                label,
+            } => Ok(Self::While {
+                condition: condition.resolve_lvalues()?,
+                body: Box::new(body.resolve_lvalues()?),
+                label,
+            }),
+            parser::Statement::DoWhile {
+                body,
+                condition,
+                label,
+            } => Ok(Self::DoWhile {
+                body: Box::new(body.resolve_lvalues()?),
+                condition: condition.resolve_lvalues()?,
+                label,
+            }),
+            parser::Statement::For {
+                init,
+                condition,
+                post,
+                body,
+                label,
+            } => Ok(parser::Statement::For {
+                init: init.resolve_lvalues()?,
+                condition: condition.map(|cond| cond.resolve_lvalues()).transpose()?,
+                post: post.map(|post| post.resolve_lvalues()).transpose()?,
+                body: Box::new(body.resolve_lvalues()?),
+                label,
+            }),
+            parser::Statement::Null
+            | parser::Statement::Break(_)
+            | parser::Statement::Continue(_) => Ok(self),
+        }
+    }
+}
+
+impl ResolveLvalues for parser::InitExp {
+    fn resolve_lvalues(self) -> Result<Self, SemanticError> {
+        match self {
+            parser::InitExp::Declaration(declaration) => declaration
+                .resolve_lvalues()
+                .map(parser::InitExp::Declaration),
+            parser::InitExp::Expression(expression) => expression
+                .map(|expr| expr.resolve_lvalues())
+                .transpose()
+                .map(parser::InitExp::Expression),
         }
     }
 }
