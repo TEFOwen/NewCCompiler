@@ -2,6 +2,30 @@ use thiserror::Error;
 
 use crate::parser;
 
+pub fn get_expression_constant(expression: &parser::Expression) -> Option<u32> {
+    if let parser::Expression::Factor(parser::Factor::Postfix(parser::Postfix {
+        primary,
+        postfix,
+    })) = expression
+    {
+        if postfix.len() == 0 {
+            get_primary_constant(primary)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+pub fn get_primary_constant(primary: &parser::Primary) -> Option<u32> {
+    match primary {
+        parser::Primary::Constant(value) => Some(*value),
+        parser::Primary::Paren(expression) => get_expression_constant(expression),
+        _ => None,
+    }
+}
+
 pub fn resolve_program(program: parser::Program) -> Result<parser::Program, SemanticError> {
     let program = crate::resolve_variables::resolve_variables(program)?;
     let program = crate::resolve_lvalues::resolve_lvalues(program)?;
@@ -25,4 +49,14 @@ pub enum SemanticError {
     BreakNotWithinLoopOrSwitch,
     #[error("Continue statement not within a loop")]
     ContinueNotWithinLoop,
+    #[error("Default statement not within a switch")]
+    DefaultNotWithinSwitch,
+    #[error("Case statement not within a switch")]
+    CaseNotWithinSwitch,
+    #[error("Non-constant expression found")]
+    NonConstantExpression,
+    #[error("Duplicate case value: {0}")]
+    DuplicateCaseValue(String),
+    #[error("Duplicate default label")]
+    DuplicateDefaultLabel,
 }

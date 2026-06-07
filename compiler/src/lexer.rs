@@ -40,6 +40,9 @@ pub enum Keyword {
     For,
     Break,
     Continue,
+    Switch,
+    Case,
+    Default,
 }
 
 impl TryFrom<&String> for Keyword {
@@ -58,6 +61,9 @@ impl TryFrom<&String> for Keyword {
             "for" => Ok(Keyword::For),
             "break" => Ok(Keyword::Break),
             "continue" => Ok(Keyword::Continue),
+            "switch" => Ok(Keyword::Switch),
+            "case" => Ok(Keyword::Case),
+            "default" => Ok(Keyword::Default),
             _ => Err(()),
         }
     }

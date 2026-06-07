@@ -48,6 +48,8 @@ pub enum Statement {
     },
     Break(Option<String>),
     Continue(Option<String>),
+    Case(Expression, Box<Statement>, Option<String>),
+    Default(Box<Statement>, Option<String>),
     While {
         condition: Expression,
         body: Box<Statement>,
@@ -65,6 +67,7 @@ pub enum Statement {
         body: Box<Statement>,
         label: Option<String>,
     },
+    Switch(Expression, Box<Statement>, Option<String>, Vec<u32>, bool),
     Block(Block),
     Null,
 }
@@ -318,6 +321,19 @@ impl ToAst for Statement {
                     Ok(Statement::Expression(expr))
                 }
             }
+            Some(Token(TokenType::Keyword(Keyword::Case), _)) => {
+                tokens.next(); // Consume the 'case' token
+                let value = Expression::to_ast(tokens)?;
+                expect_token!(tokens, TokenType::Symbol(Symbol::Colon), "':'");
+                let stmt = Statement::to_ast(tokens)?;
+                Ok(Statement::Case(value, Box::new(stmt), None))
+            }
+            Some(Token(TokenType::Keyword(Keyword::Default), _)) => {
+                tokens.next(); // Consume the 'default' token
+                expect_token!(tokens, TokenType::Symbol(Symbol::Colon), "':'");
+                let stmt = Statement::to_ast(tokens)?;
+                Ok(Statement::Default(Box::new(stmt), None))
+            }
             Some(Token(TokenType::Keyword(Keyword::Goto), _)) => {
                 tokens.next(); // Consume the 'goto' token
                 let Token(TokenType::Identifier(label), _) =
@@ -425,6 +441,14 @@ impl ToAst for Statement {
                     body,
                     label: None,
                 })
+            }
+            Some(Token(TokenType::Keyword(Keyword::Switch), _)) => {
+                tokens.next(); // Consume the 'switch' token
+                expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
+                let condition = Expression::to_ast(tokens)?;
+                expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
+                let body = Box::new(Statement::to_ast(tokens)?);
+                Ok(Statement::Switch(condition, body, None, Vec::new(), false))
             }
             Some(Token(TokenType::Symbol(Symbol::OpenBrace), _)) => {
                 tokens.reset_peek();

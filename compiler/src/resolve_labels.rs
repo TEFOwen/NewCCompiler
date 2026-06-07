@@ -60,7 +60,7 @@ impl CollectLabels for parser::BlockItem {
 impl CollectLabels for parser::Statement {
     fn collect_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
         match self {
-            Self::Labeled(label, statement) => {
+            parser::Statement::Labeled(label, statement) => {
                 if labels.contains_key(&label) {
                     return Err(SemanticError::DuplicateLabel(label));
                 }
@@ -68,13 +68,13 @@ impl CollectLabels for parser::Statement {
                 labels.insert(label, unique_label.clone());
                 statement
                     .collect_labels(labels)
-                    .map(|stmt| Self::Labeled(unique_label, Box::new(stmt)))
+                    .map(|stmt| parser::Statement::Labeled(unique_label, Box::new(stmt)))
             }
-            Self::If {
+            parser::Statement::If {
                 condition,
                 then_branch,
                 else_branch,
-            } => Ok(Self::If {
+            } => Ok(parser::Statement::If {
                 condition,
                 then_branch: Box::new(then_branch.collect_labels(labels)?),
                 else_branch: else_branch
@@ -82,12 +82,14 @@ impl CollectLabels for parser::Statement {
                     .transpose()?
                     .map(Box::new),
             }),
-            Self::Block(block) => block.collect_labels(labels).map(Self::Block),
+            parser::Statement::Block(block) => {
+                block.collect_labels(labels).map(parser::Statement::Block)
+            }
             parser::Statement::While {
                 condition,
                 body,
                 label,
-            } => Ok(Self::While {
+            } => Ok(parser::Statement::While {
                 condition,
                 body: Box::new(body.collect_labels(labels)?),
                 label,
@@ -96,7 +98,7 @@ impl CollectLabels for parser::Statement {
                 body,
                 condition,
                 label,
-            } => Ok(Self::DoWhile {
+            } => Ok(parser::Statement::DoWhile {
                 body: Box::new(body.collect_labels(labels)?),
                 condition,
                 label,
@@ -107,7 +109,7 @@ impl CollectLabels for parser::Statement {
                 post,
                 body,
                 label,
-            } => Ok(Self::For {
+            } => Ok(parser::Statement::For {
                 init,
                 condition,
                 post,
@@ -120,6 +122,24 @@ impl CollectLabels for parser::Statement {
             | parser::Statement::Continue(_)
             | parser::Statement::Return(_)
             | parser::Statement::Null => Ok(self),
+            parser::Statement::Case(expression, statement, label) => Ok(parser::Statement::Case(
+                expression,
+                Box::new(statement.collect_labels(labels)?),
+                label,
+            )),
+            parser::Statement::Default(statement, label) => Ok(parser::Statement::Default(
+                Box::new(statement.collect_labels(labels)?),
+                label,
+            )),
+            parser::Statement::Switch(expression, statement, label, cases, default_exists) => {
+                Ok(parser::Statement::Switch(
+                    expression,
+                    Box::new(statement.collect_labels(labels)?),
+                    label,
+                    cases,
+                    default_exists,
+                ))
+            }
         }
     }
 }
@@ -229,6 +249,24 @@ impl ResolveLabels for parser::Statement {
             | parser::Statement::Continue(_)
             | parser::Statement::Expression(_)
             | parser::Statement::Null => Ok(self),
+            parser::Statement::Case(expression, statement, label) => Ok(Self::Case(
+                expression,
+                Box::new(statement.resolve_labels(labels)?),
+                label,
+            )),
+            parser::Statement::Default(statement, label) => Ok(Self::Default(
+                Box::new(statement.resolve_labels(labels)?),
+                label,
+            )),
+            parser::Statement::Switch(expression, statement, label, cases, default_exists) => {
+                Ok(Self::Switch(
+                    expression,
+                    Box::new(statement.resolve_labels(labels)?),
+                    label,
+                    cases,
+                    default_exists,
+                ))
+            }
         }
     }
 }

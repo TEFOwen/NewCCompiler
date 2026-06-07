@@ -100,17 +100,19 @@ impl ResolveLvalues for parser::Declaration {
 impl ResolveLvalues for parser::Statement {
     fn resolve_lvalues(self) -> Result<Self, SemanticError> {
         match self {
-            Self::Return(expression) => expression.resolve_lvalues().map(Self::Return),
-            Self::Labeled(label, statement) => statement
+            parser::Statement::Return(expression) => expression.resolve_lvalues().map(Self::Return),
+            parser::Statement::Labeled(label, statement) => statement
                 .resolve_lvalues()
-                .map(|stmt| Self::Labeled(label, Box::new(stmt))),
-            Self::Goto(label) => Ok(Self::Goto(label)),
-            Self::Expression(expression) => expression.resolve_lvalues().map(Self::Expression),
-            Self::If {
+                .map(|stmt| parser::Statement::Labeled(label, Box::new(stmt))),
+            parser::Statement::Goto(label) => Ok(parser::Statement::Goto(label)),
+            parser::Statement::Expression(expression) => {
+                expression.resolve_lvalues().map(Self::Expression)
+            }
+            parser::Statement::If {
                 condition,
                 then_branch,
                 else_branch,
-            } => Ok(Self::If {
+            } => Ok(parser::Statement::If {
                 condition: condition.resolve_lvalues()?,
                 then_branch: Box::new(then_branch.resolve_lvalues()?),
                 else_branch: else_branch
@@ -118,12 +120,14 @@ impl ResolveLvalues for parser::Statement {
                     .transpose()?
                     .map(Box::new),
             }),
-            Self::Block(block) => block.resolve_lvalues().map(Self::Block),
+            parser::Statement::Block(block) => {
+                block.resolve_lvalues().map(parser::Statement::Block)
+            }
             parser::Statement::While {
                 condition,
                 body,
                 label,
-            } => Ok(Self::While {
+            } => Ok(parser::Statement::While {
                 condition: condition.resolve_lvalues()?,
                 body: Box::new(body.resolve_lvalues()?),
                 label,
@@ -132,7 +136,7 @@ impl ResolveLvalues for parser::Statement {
                 body,
                 condition,
                 label,
-            } => Ok(Self::DoWhile {
+            } => Ok(parser::Statement::DoWhile {
                 body: Box::new(body.resolve_lvalues()?),
                 condition: condition.resolve_lvalues()?,
                 label,
@@ -153,6 +157,23 @@ impl ResolveLvalues for parser::Statement {
             parser::Statement::Null
             | parser::Statement::Break(_)
             | parser::Statement::Continue(_) => Ok(self),
+            parser::Statement::Case(expression, statement, label) => Ok(parser::Statement::Case(
+                expression.resolve_lvalues()?,
+                Box::new(statement.resolve_lvalues()?),
+                label,
+            )),
+            parser::Statement::Default(statement, label) => statement
+                .resolve_lvalues()
+                .map(|stmt| parser::Statement::Default(Box::new(stmt), label)),
+            parser::Statement::Switch(expression, statement, label, cases, default_exists) => {
+                Ok(parser::Statement::Switch(
+                    expression.resolve_lvalues()?,
+                    Box::new(statement.resolve_lvalues()?),
+                    label,
+                    cases,
+                    default_exists,
+                ))
+            }
         }
     }
 }

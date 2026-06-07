@@ -4,7 +4,7 @@
 <block-item> ::= <statement> | <declaration>
 <declaration> ::= "int" <identifier> ["=" <exp>] ";"
 <statement> ::= "return" <exp> ";"
-                | <identifier> ":" <statement>
+                | <labeled-statement>
                 | "goto" <identifier> ";"
                 | "if" "(" <exp> ")" <statement> ["else" <statement>]
                 | <block>
@@ -13,8 +13,10 @@
                 | "while" "(" <exp> ")" <statement>
                 | "do" <statement> "while" "(" <exp> ")" ";"
                 | "for" "(" <for-init> [<exp>] ";" [<exp>] ")" <statement>
+                | "switch" "(" <exp> ")" <statement>
                 | <exp> ";"
                 | ";"
+<labeled-statement> ::= <identifier> ":" <statement> | "case" <expr> ":" <statement | "default" ":" <statement>
 <for-init> ::= <declaration> | [<exp>] ";"
 <exp> ::= <factor> | <exp> <binop> <exp> | <exp> "?" <exp> ":" <exp>
 <factor> ::= <unop> <factor> | <postfix>

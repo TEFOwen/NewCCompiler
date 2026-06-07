@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::parser;
+use crate::{parser, semantic_analysis::get_expression_constant};
 
 static UNARY_OP_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static BINARY_OP_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -269,6 +269,53 @@ impl ToTacky for parser::Statement {
                     instructions.extend(post.to_tacky().0);
                 }
                 instructions.push(Instruction::Jump(start_label));
+                instructions.push(Instruction::Label(break_label));
+                instructions
+            }
+            parser::Statement::Case(expression, statement, target) => {
+                let label = format!(
+                    "{}.case.{}",
+                    target.unwrap(),
+                    get_expression_constant(&expression).unwrap()
+                );
+                let mut instructions = vec![Instruction::Label(label)];
+                instructions.extend(statement.to_tacky());
+                instructions
+            }
+            parser::Statement::Default(statement, target) => {
+                let label = format!("{}.default", target.unwrap());
+                let mut instructions = vec![Instruction::Label(label)];
+                instructions.extend(statement.to_tacky());
+                instructions
+            }
+            parser::Statement::Switch(expression, statement, label, cases, default_exists) => {
+                let label = label.clone().expect("Loops have not been resolved");
+
+                let break_label = format!("{}.break", label);
+                let (mut instructions, cond) = expression.to_tacky();
+                for case in cases {
+                    let case_label = format!("{}.case.{}", label, case);
+                    let dst = next_binary_op_var();
+                    instructions.push(Instruction::BinaryOp {
+                        op: BinaryOperator::Equal,
+                        val1: cond.clone(),
+                        val2: Value::Constant(case),
+                        dst: dst.clone(),
+                    });
+                    instructions.push(Instruction::JumpIfNotZero {
+                        val: dst,
+                        target: case_label,
+                    });
+                }
+
+                if default_exists {
+                    let default_label = format!("{}.default", label);
+                    instructions.push(Instruction::Jump(default_label));
+                } else {
+                    instructions.push(Instruction::Jump(break_label.clone()));
+                }
+
+                instructions.extend(statement.to_tacky());
                 instructions.push(Instruction::Label(break_label));
                 instructions
             }

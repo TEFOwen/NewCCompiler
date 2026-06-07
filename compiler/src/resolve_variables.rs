@@ -196,6 +196,24 @@ impl ResolveVariables for parser::Statement {
             | parser::Statement::Goto(_)
             | parser::Statement::Break(_)
             | parser::Statement::Continue(_) => Ok(self),
+            parser::Statement::Case(expression, statement, label) => Ok(parser::Statement::Case(
+                expression.resolve_variables(variables, defined_in_this_scope)?,
+                Box::new(statement.resolve_variables(variables, defined_in_this_scope)?),
+                label,
+            )),
+            parser::Statement::Default(statement, label) => Ok(parser::Statement::Default(
+                Box::new(statement.resolve_variables(variables, defined_in_this_scope)?),
+                label,
+            )),
+            parser::Statement::Switch(expression, statement, label, cases, default_exists) => {
+                Ok(parser::Statement::Switch(
+                    expression.resolve_variables(variables, defined_in_this_scope)?,
+                    Box::new(statement.resolve_variables(variables, defined_in_this_scope)?),
+                    label,
+                    cases,
+                    default_exists,
+                ))
+            }
         }
     }
 }
