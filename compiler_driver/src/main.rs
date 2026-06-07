@@ -95,7 +95,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if args.compile_options.lex {
-        println!("Tokens: {:#?}", tokens);
+        print!("Tokens: [ ");
+        for compiler::lexer::Token(token_type, _) in &tokens {
+            print!("{:?} ", token_type);
+        }
+        println!("]");
         return Ok(());
     }
 
