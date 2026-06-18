@@ -45,17 +45,24 @@ impl ResolveLoops for parser::Program {
         used_cases: &mut HashSet<u32>,
         default_used: &mut bool,
     ) -> Result<Self, SemanticError> {
-        Ok(parser::Program(self.0.resolve_loops(
-            current_loop,
-            current_switch,
-            current_break_target,
-            used_cases,
-            default_used,
-        )?))
+        Ok(parser::Program(
+            self.0
+                .into_iter()
+                .map(|item| {
+                    item.resolve_loops(
+                        current_loop.clone(),
+                        current_switch.clone(),
+                        current_break_target.clone(),
+                        used_cases,
+                        default_used,
+                    )
+                })
+                .collect::<Result<_, _>>()?,
+        ))
     }
 }
 
-impl ResolveLoops for parser::FuncDef {
+impl ResolveLoops for parser::FuncDeclaration {
     fn resolve_loops(
         self,
         current_loop: Option<String>,
@@ -64,15 +71,21 @@ impl ResolveLoops for parser::FuncDef {
         used_cases: &mut HashSet<u32>,
         default_used: &mut bool,
     ) -> Result<Self, SemanticError> {
-        Ok(parser::FuncDef {
-            name: self.name,
-            body: self.body.resolve_loops(
-                current_loop,
-                current_switch,
-                current_break_target,
-                used_cases,
-                default_used,
-            )?,
+        Ok(parser::FuncDeclaration {
+            identifier: self.identifier,
+            parameters: self.parameters,
+            body: self
+                .body
+                .map(|body| {
+                    body.resolve_loops(
+                        current_loop,
+                        current_switch,
+                        current_break_target,
+                        used_cases,
+                        default_used,
+                    )
+                })
+                .transpose()?,
         })
     }
 }
@@ -120,7 +133,49 @@ impl ResolveLoops for parser::BlockItem {
                 used_cases,
                 default_used,
             )?)),
-            Self::Declaration(declaration) => Ok(Self::Declaration(declaration)),
+            Self::Declaration(declaration) => declaration
+                .resolve_loops(
+                    current_loop,
+                    current_switch,
+                    current_break_target,
+                    used_cases,
+                    default_used,
+                )
+                .map(Self::Declaration),
+        }
+    }
+}
+
+impl ResolveLoops for parser::Declaration {
+    fn resolve_loops(
+        self,
+        current_loop: Option<String>,
+        current_switch: Option<String>,
+        current_break_target: Option<String>,
+        used_cases: &mut HashSet<u32>,
+        default_used: &mut bool,
+    ) -> Result<Self, SemanticError> {
+        match self {
+            parser::Declaration::Variable(_) => Ok(self),
+            parser::Declaration::Function(func_declaration) => func_declaration
+                .body
+                .map(|body| {
+                    body.resolve_loops(
+                        current_loop.clone(),
+                        current_switch.clone(),
+                        current_break_target.clone(),
+                        used_cases,
+                        default_used,
+                    )
+                })
+                .transpose()
+                .map(|body| {
+                    parser::Declaration::Function(parser::FuncDeclaration {
+                        identifier: func_declaration.identifier,
+                        parameters: func_declaration.parameters,
+                        body,
+                    })
+                }),
         }
     }
 }
@@ -352,31 +407,33 @@ impl ResolveLoops for parser::Statement {
                     label: Some(label),
                 })
             }
-            parser::Statement::Switch(expression, statement, _, _, _) => {
+            parser::Statement::Switch {
+                condition, body, ..
+            } => {
                 let label = get_unique_switch_label_name();
                 let mut used_cases = HashSet::new();
                 let mut default_used = false;
-                let expression = expression.resolve_loops(
+                let condition = condition.resolve_loops(
                     current_loop.clone(),
                     Some(label.clone()),
                     Some(label.clone()),
                     &mut used_cases,
                     &mut default_used,
                 )?;
-                let statement = Box::new(statement.resolve_loops(
+                let body = Box::new(body.resolve_loops(
                     current_loop,
                     Some(label.clone()),
                     Some(label.clone()),
                     &mut used_cases,
                     &mut default_used,
                 )?);
-                Ok(parser::Statement::Switch(
-                    expression,
-                    statement,
-                    Some(label),
-                    used_cases.into_iter().collect(),
-                    default_used,
-                ))
+                Ok(parser::Statement::Switch {
+                    condition,
+                    body,
+                    label: Some(label),
+                    cases: used_cases.into_iter().collect(),
+                    default_exists: default_used,
+                })
             }
             parser::Statement::Block(block) => block
                 .resolve_loops(
@@ -392,7 +449,7 @@ impl ResolveLoops for parser::Statement {
     }
 }
 
-impl ResolveLoops for parser::InitExp {
+impl ResolveLoops for parser::ForInit {
     fn resolve_loops(
         self,
         _current_loop: Option<String>,

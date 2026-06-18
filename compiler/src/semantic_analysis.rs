@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::parser;
+use crate::{parser, resolve_types::SymbolTable};
 
 pub fn get_expression_constant(expression: &parser::Expression) -> Option<u32> {
     if let parser::Expression::Factor(parser::Factor::Postfix(parser::Postfix {
@@ -26,11 +26,14 @@ pub fn get_primary_constant(primary: &parser::Primary) -> Option<u32> {
     }
 }
 
-pub fn resolve_program(program: parser::Program) -> Result<parser::Program, SemanticError> {
-    let program = crate::resolve_variables::resolve_variables(program)?;
+pub fn resolve_program(
+    program: parser::Program,
+) -> Result<(parser::Program, SymbolTable), SemanticError> {
+    let program = crate::resolve_identifiers::resolve_identifiers(program)?;
     let program = crate::resolve_lvalues::resolve_lvalues(program)?;
     let program = crate::resolve_labels::resolve_labels(program)?;
-    crate::resolve_loops::resolve_loops(program)
+    let program = crate::resolve_loops::resolve_loops(program)?;
+    crate::resolve_types::resolve_types(program)
 }
 
 #[derive(Debug, Error)]
@@ -59,4 +62,12 @@ pub enum SemanticError {
     DuplicateCaseValue(String),
     #[error("Duplicate default label")]
     DuplicateDefaultLabel,
+    #[error("Function body found in a declaration")]
+    FunctionBodyInDeclaration,
+    #[error("Incompatible function declaration for {0}")]
+    IncompatibleFunctionDeclaration(String),
+    #[error("Function defined more than once: {0}")]
+    FunctionDefinedMoreThanOnce(String),
+    #[error("Incorrect type: {0}")]
+    TypeMismatch(String),
 }

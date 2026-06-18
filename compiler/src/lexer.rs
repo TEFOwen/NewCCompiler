@@ -76,6 +76,7 @@ pub enum Symbol {
     OpenBrace,  // {
     CloseBrace, // }
     Semicolon,  // ;
+    Comma,      // ,
 
     Exclamation, // !
     Tilde,       // ~
@@ -378,6 +379,7 @@ where
                     }
                     '?' => Symbol::Question,
                     ':' => Symbol::Colon,
+                    ',' => Symbol::Comma,
                     _ => {
                         return Err(LexerError::UnknownToken {
                             line: line_number,

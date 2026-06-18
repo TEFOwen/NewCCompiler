@@ -1,8 +1,10 @@
-<program> ::= <function>
-<function> ::= "int" <identifier> "(" "void" ")" <block>
+<program> ::= {<function-declaration>}
+<declaration> ::= <variable-declaration> | <function-declaration>
+<variable-declaration> ::= "int" <identifier> ["=" <exp>] ";"
+<function-declaration> ::= "int" <identifier> "(" <paramlist> ")" (<block> | ";")
+<param-list> ::= "void" | "int" <identifier> {"," "int" <identifier>}
 <block> ::= "{" {<block-item} "}"
 <block-item> ::= <statement> | <declaration>
-<declaration> ::= "int" <identifier> ["=" <exp>] ";"
 <statement> ::= "return" <exp> ";"
                 | <labeled-statement>
                 | "goto" <identifier> ";"
@@ -17,11 +19,12 @@
                 | <exp> ";"
                 | ";"
 <labeled-statement> ::= <identifier> ":" <statement> | "case" <expr> ":" <statement | "default" ":" <statement>
-<for-init> ::= <declaration> | [<exp>] ";"
+<for-init> ::= <variable-declaration> | [<exp>] ";"
 <exp> ::= <factor> | <exp> <binop> <exp> | <exp> "?" <exp> ":" <exp>
 <factor> ::= <unop> <factor> | <postfix>
 <postfix> ::= <primary> { <postfix-op> }
-<primary> ::= <int> | <identifier> | "(" <exp> ")"
+<primary> ::= <int> | <identifier> | "(" <exp> ")" | <identifier> "(" [<argument-list>] ")"
+<argument-list> ::= <exp> {"," <exp>}
 <unop> ::= "-" | "~" | "!" | "--" | "++"
 <postfix-op> ::= "--" | "++"
 <binop> ::= "-" | "+" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" | "&&" | "||" | "==" | "!=" | "<" | "<=" | ">" | ">="

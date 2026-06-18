@@ -1,8 +1,9 @@
-program = Program(function_definition)
-function_definition = Function(identifier name, block body)
+program = Program(function_declaration*)
+declaration = FuncDecl(function_declaration) | VarDecl(variable_declaration)
+function_declaration = (identifier name, identifier* params, block? body) 
+variable_declaration = (identifier name, exp? init)
 block = Block(block_item*)
 block_item = S(statement) | D(declaration)
-declaration = Declaration(identifier name, exp? init)
 statement = Return(exp)
         | Labeled(statement)
         | Goto(identifier)
@@ -18,13 +19,14 @@ statement = Return(exp)
         | For(for_init init, exp? condition, exp? post, statement body)
         | Switch(exp, statement body)
         | Null
-for_init = InitDecl(declaration) | InitExp(exp?)
+for_init = InitDecl(variable_declaration) | InitExp(exp?)
 exp = Constant(int)
     | Var(identifier)
     | Unary(unary_operator, exp)
     | Binary(binary_operator, exp, exp)
     | Assignment(exp, exp)
     | Conditional(exp condition, exp, exp)
+    | FunctionCall(identifier, exp* arg)
 unary_operator = Complement | Negate | Not | Increment | Decrement
 binary_operator = Add | Subtract | Multiply | Divide | Remainder
                 | BitAnd | BitOR | BitXor | LeftShift | RightShift

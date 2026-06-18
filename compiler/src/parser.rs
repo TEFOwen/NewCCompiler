@@ -12,13 +12,23 @@ pub enum ParserError {
 }
 
 #[derive(Debug, Clone)]
-pub struct Program(pub FuncDef);
+pub struct Program(pub Vec<FuncDeclaration>);
 
 #[derive(Debug, Clone)]
-pub struct FuncDef {
-    pub name: String,
-    pub body: Block,
+pub enum Declaration {
+    Variable(VariableDeclaration),
+    Function(FuncDeclaration),
 }
+
+#[derive(Debug, Clone)]
+pub struct FuncDeclaration {
+    pub identifier: String,
+    pub parameters: ParamList,
+    pub body: Option<Block>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParamList(pub Vec<String>);
 
 #[derive(Debug, Clone)]
 pub struct Block(pub Vec<BlockItem>);
@@ -30,7 +40,7 @@ pub enum BlockItem {
 }
 
 #[derive(Debug, Clone)]
-pub struct Declaration {
+pub struct VariableDeclaration {
     pub identifier: String,
     pub initialiser: Option<Expression>,
 }
@@ -61,20 +71,26 @@ pub enum Statement {
         label: Option<String>,
     },
     For {
-        init: InitExp,
+        init: ForInit,
         condition: Option<Expression>,
         post: Option<Expression>,
         body: Box<Statement>,
         label: Option<String>,
     },
-    Switch(Expression, Box<Statement>, Option<String>, Vec<u32>, bool),
+    Switch {
+        condition: Expression,
+        body: Box<Statement>,
+        label: Option<String>,
+        cases: Vec<u32>,
+        default_exists: bool,
+    },
     Block(Block),
     Null,
 }
 
 #[derive(Debug, Clone)]
-pub enum InitExp {
-    Declaration(Declaration),
+pub enum ForInit {
+    Declaration(VariableDeclaration),
     Expression(Option<Expression>),
 }
 
@@ -149,7 +165,11 @@ pub enum Primary {
     Constant(u32),
     Var(String),
     Paren(Box<Expression>),
+    FunctionCall(String, ArgumentList),
 }
+
+#[derive(Debug, Clone)]
+pub struct ArgumentList(pub Vec<Expression>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOperator {
@@ -191,37 +211,87 @@ macro_rules! expect_token {
 
 impl ToAst for Program {
     fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
-        let funcdef = FuncDef::to_ast(tokens)?;
-        if let Some(token) = tokens.next() {
-            if token.0 != TokenType::EndOfFile {
-                return Err(ParserError::UnexpectedToken {
-                    expected: "EOF".into(),
-                    found: token,
-                });
-            }
+        let mut funcs = Vec::new();
+        while !matches!(tokens.peek(), Some(Token(TokenType::EndOfFile, _))) {
+            tokens.reset_peek();
+            funcs.push(FuncDeclaration::to_ast(tokens)?);
         }
+        expect_token!(tokens, TokenType::EndOfFile, "end of file");
 
-        Ok(Program(funcdef))
+        Ok(Program(funcs))
     }
 }
 
-impl ToAst for FuncDef {
+impl ToAst for FuncDeclaration {
     fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         expect_token!(tokens, TokenType::Keyword(Keyword::Int), "int");
-        let Token(TokenType::Identifier(name), _) =
+        let Token(TokenType::Identifier(identifier), _) =
             expect_token!(tokens, TokenType::Identifier(_), "function name")
         else {
             unreachable!()
         };
 
         expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
-        expect_token!(tokens, TokenType::Keyword(Keyword::Void), "void");
+
+        let parameters = ParamList::to_ast(tokens)?;
+
         expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
 
-        Ok(FuncDef {
-            name,
-            body: Block::to_ast(tokens)?,
+        let body = if matches!(
+            tokens.peek(),
+            Some(Token(TokenType::Symbol(Symbol::Semicolon), _))
+        ) {
+            tokens.next();
+            None
+        } else {
+            tokens.reset_peek();
+            Some(Block::to_ast(tokens)?)
+        };
+
+        Ok(FuncDeclaration {
+            identifier,
+            parameters,
+            body,
         })
+    }
+}
+
+impl ToAst for ParamList {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+        let Token(TokenType::Keyword(keyword), _) = expect_token!(
+            tokens,
+            TokenType::Keyword(Keyword::Void | Keyword::Int),
+            "type specifier"
+        ) else {
+            unreachable!()
+        };
+        let mut params = Vec::new();
+        if keyword == Keyword::Void {
+            Ok(ParamList(params))
+        } else {
+            loop {
+                let Token(TokenType::Identifier(identifier), _) =
+                    expect_token!(tokens, TokenType::Identifier(_), "parameter name")
+                else {
+                    unreachable!()
+                };
+                params.push(identifier);
+                if matches!(
+                    tokens.peek(),
+                    Some(Token(TokenType::Symbol(Symbol::Comma), _))
+                ) {
+                    tokens.next();
+                    expect_token!(
+                        tokens,
+                        TokenType::Keyword(Keyword::Int),
+                        "type specifier for parameter"
+                    );
+                } else {
+                    break;
+                }
+            }
+            Ok(ParamList(params))
+        }
     }
 }
 
@@ -258,6 +328,23 @@ impl ToAst for BlockItem {
 
 impl ToAst for Declaration {
     fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+        tokens.peek(); // int
+        tokens.peek(); // identifier
+        if matches!(
+            tokens.peek(),
+            Some(Token(TokenType::Symbol(Symbol::OpenParen), _))
+        ) {
+            tokens.reset_peek();
+            Ok(Declaration::Function(FuncDeclaration::to_ast(tokens)?))
+        } else {
+            tokens.reset_peek();
+            Ok(Declaration::Variable(VariableDeclaration::to_ast(tokens)?))
+        }
+    }
+}
+
+impl ToAst for VariableDeclaration {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         expect_token!(tokens, TokenType::Keyword(Keyword::Int), "int");
         let Token(TokenType::Identifier(identifier), _) =
             expect_token!(tokens, TokenType::Identifier(_), "variable name")
@@ -277,7 +364,7 @@ impl ToAst for Declaration {
 
         expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
 
-        Ok(Declaration {
+        Ok(VariableDeclaration {
             identifier,
             initialiser,
         })
@@ -400,15 +487,15 @@ impl ToAst for Statement {
                 let init = match tokens.peek() {
                     Some(Token(TokenType::Keyword(Keyword::Int), _)) => {
                         tokens.reset_peek();
-                        InitExp::Declaration(Declaration::to_ast(tokens)?)
+                        ForInit::Declaration(VariableDeclaration::to_ast(tokens)?)
                     }
                     Some(Token(TokenType::Symbol(Symbol::Semicolon), _)) => {
                         tokens.next(); // Consume the ';'
-                        InitExp::Expression(None)
+                        ForInit::Expression(None)
                     }
                     _ => {
                         tokens.reset_peek();
-                        let exp = InitExp::Expression(Some(Expression::to_ast(tokens)?));
+                        let exp = ForInit::Expression(Some(Expression::to_ast(tokens)?));
                         expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
                         exp
                     }
@@ -448,7 +535,13 @@ impl ToAst for Statement {
                 let condition = Expression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
                 let body = Box::new(Statement::to_ast(tokens)?);
-                Ok(Statement::Switch(condition, body, None, Vec::new(), false))
+                Ok(Statement::Switch {
+                    condition,
+                    body,
+                    label: None,
+                    cases: Vec::new(),
+                    default_exists: false,
+                })
             }
             Some(Token(TokenType::Symbol(Symbol::OpenBrace), _)) => {
                 tokens.reset_peek();
@@ -722,14 +815,54 @@ impl ToAst for Primary {
         );
 
         match token_type {
-            TokenType::Constant(i) => return Ok(Primary::Constant(i)),
-            TokenType::Identifier(identifier) => return Ok(Primary::Var(identifier)),
+            TokenType::Constant(i) => Ok(Primary::Constant(i)),
+            TokenType::Identifier(identifier) => {
+                if matches!(
+                    tokens.peek(),
+                    Some(Token(TokenType::Symbol(Symbol::OpenParen), _))
+                ) {
+                    tokens.next(); // Consume the '('
+                    let args = if !matches!(
+                        tokens.peek(),
+                        Some(Token(TokenType::Symbol(Symbol::CloseParen), _)),
+                    ) {
+                        tokens.reset_peek();
+                        ArgumentList::to_ast(tokens)?
+                    } else {
+                        ArgumentList(Vec::new())
+                    };
+                    expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
+                    Ok(Primary::FunctionCall(identifier, args))
+                } else {
+                    tokens.reset_peek();
+                    Ok(Primary::Var(identifier))
+                }
+            }
             TokenType::Symbol(Symbol::OpenParen) => {
                 let expr = Expression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
-                return Ok(Primary::Paren(Box::new(expr)));
+                Ok(Primary::Paren(Box::new(expr)))
             }
             _ => unreachable!(),
         }
+    }
+}
+
+impl ToAst for ArgumentList {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+        let mut args = Vec::new();
+        loop {
+            tokens.reset_peek();
+            args.push(Expression::to_ast(tokens)?);
+            if matches!(
+                tokens.peek(),
+                Some(Token(TokenType::Symbol(Symbol::Comma), _))
+            ) {
+                tokens.next(); // Consume the ','
+            } else {
+                break;
+            }
+        }
+        Ok(ArgumentList(args))
     }
 }

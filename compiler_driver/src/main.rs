@@ -120,13 +120,14 @@ fn compile_file(
         return Ok(None);
     }
 
-    let resolved_ast = match compiler::semantic_analysis::resolve_program(ast) {
-        Ok(resolved_ast) => {
+    let (resolved_ast, symbol_table) = match compiler::semantic_analysis::resolve_program(ast) {
+        Ok((resolved_ast, symbol_table)) => {
             if compile_options.validate {
                 println!("Semantic analysis successful: {:#?}", resolved_ast);
+                println!("Symbol table: {:#?}", symbol_table);
                 return Ok(None);
             }
-            resolved_ast
+            (resolved_ast, symbol_table)
         }
         Err(e) => {
             eprintln!("Semantic analysis error: {}", e);
@@ -150,7 +151,7 @@ fn compile_file(
 
     let assembly_path = input_path.with_extension("s");
     let assembly_file = File::create(&assembly_path)?;
-    compiler::codeemission::EmitCode::emit_code(&assembly, assembly_file)?;
+    compiler::codeemission::EmitCode::emit_code(&assembly, assembly_file, &symbol_table)?;
 
     if compile_options.assemble {
         println!("Assembly written to: {}", assembly_path.to_str().unwrap());
@@ -177,6 +178,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Some(assembly_path)) => assembly_paths.push(assembly_path),
             _ => {}
         }
+    }
+
+    if assembly_paths.len() == 0 || args.compile_options.assemble {
+        return Ok(());
     }
 
     if args.compile_options.nolink {

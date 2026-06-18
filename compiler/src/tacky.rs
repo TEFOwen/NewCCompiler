@@ -1,10 +1,15 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    fmt::Display,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use crate::{parser, semantic_analysis::get_expression_constant};
 
 static UNARY_OP_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static BINARY_OP_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static JUMP_LABEL_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static ARGUMENT_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static FUNC_RESULT_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn next_unary_op_var() -> Value {
     Value::Var(format!(
@@ -20,7 +25,7 @@ fn next_binary_op_var() -> Value {
     ))
 }
 
-fn next_jump_label(name: &str) -> String {
+fn next_jump_label(name: impl Display) -> String {
     format!(
         "label_{}.{}",
         name,
@@ -28,12 +33,28 @@ fn next_jump_label(name: &str) -> String {
     )
 }
 
+fn next_argument_var() -> Value {
+    Value::Var(format!(
+        "arg.{}",
+        ARGUMENT_VAR_COUNTER.fetch_add(1, Ordering::SeqCst)
+    ))
+}
+
+fn next_func_result_var(func_name: impl Display) -> Value {
+    Value::Var(format!(
+        "result.{}.{}",
+        func_name,
+        FUNC_RESULT_VAR_COUNTER.fetch_add(1, Ordering::SeqCst)
+    ))
+}
+
 #[derive(Debug)]
-pub struct Program(pub FuncDef);
+pub struct Program(pub Vec<FuncDef>);
 
 #[derive(Debug)]
 pub struct FuncDef {
-    pub name: String,
+    pub identifier: String,
+    pub params: Vec<String>,
     pub body: Vec<Instruction>,
 }
 
@@ -65,6 +86,11 @@ pub enum Instruction {
         target: String,
     },
     Label(String),
+    FunCall {
+        name: String,
+        args: Vec<Value>,
+        dst: Value,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,20 +130,36 @@ impl ToTacky for parser::Program {
     type Output = Program;
 
     fn to_tacky(self) -> Self::Output {
-        Program(self.0.to_tacky())
+        Program(
+            self.0
+                .into_iter()
+                .filter_map(|func_def| func_def.to_tacky())
+                .collect(),
+        )
     }
 }
 
-impl ToTacky for parser::FuncDef {
-    type Output = FuncDef;
+impl ToTacky for parser::FuncDeclaration {
+    type Output = Option<FuncDef>;
 
     fn to_tacky(self) -> Self::Output {
-        let mut body = self.body.to_tacky();
-        body.push(Instruction::Return(Value::Constant(0)));
-        FuncDef {
-            name: self.name,
-            body,
-        }
+        self.body.map(|body| FuncDef {
+            identifier: self.identifier,
+            params: self.parameters.to_tacky(),
+            body: body
+                .to_tacky()
+                .into_iter()
+                .chain(std::iter::once(Instruction::Return(Value::Constant(0))))
+                .collect(),
+        })
+    }
+}
+
+impl ToTacky for parser::ParamList {
+    type Output = Vec<String>;
+
+    fn to_tacky(self) -> Self::Output {
+        self.0
     }
 }
 
@@ -288,11 +330,17 @@ impl ToTacky for parser::Statement {
                 instructions.extend(statement.to_tacky());
                 instructions
             }
-            parser::Statement::Switch(expression, statement, label, cases, default_exists) => {
+            parser::Statement::Switch {
+                condition,
+                body,
+                label,
+                cases,
+                default_exists,
+            } => {
                 let label = label.clone().expect("Loops have not been resolved");
 
                 let break_label = format!("{}.break", label);
-                let (mut instructions, cond) = expression.to_tacky();
+                let (mut instructions, cond) = condition.to_tacky();
                 for case in cases {
                     let case_label = format!("{}.case.{}", label, case);
                     let dst = next_binary_op_var();
@@ -315,7 +363,7 @@ impl ToTacky for parser::Statement {
                     instructions.push(Instruction::Jump(break_label.clone()));
                 }
 
-                instructions.extend(statement.to_tacky());
+                instructions.extend(body.to_tacky());
                 instructions.push(Instruction::Label(break_label));
                 instructions
             }
@@ -323,20 +371,20 @@ impl ToTacky for parser::Statement {
     }
 }
 
-impl ToTacky for parser::InitExp {
+impl ToTacky for parser::ForInit {
     type Output = Vec<Instruction>;
 
     fn to_tacky(self) -> Self::Output {
         match self {
-            parser::InitExp::Declaration(declaration) => declaration.to_tacky(),
-            parser::InitExp::Expression(expression) => expression
+            parser::ForInit::Declaration(declaration) => declaration.to_tacky(),
+            parser::ForInit::Expression(expression) => expression
                 .map(|expr| expr.to_tacky().0)
                 .unwrap_or_else(Vec::new),
         }
     }
 }
 
-impl ToTacky for parser::Declaration {
+impl ToTacky for parser::VariableDeclaration {
     type Output = Vec<Instruction>;
 
     fn to_tacky(self) -> Self::Output {
@@ -350,6 +398,23 @@ impl ToTacky for parser::Declaration {
             });
         }
         instructions
+    }
+}
+
+impl ToTacky for parser::Declaration {
+    type Output = Vec<Instruction>;
+
+    fn to_tacky(self) -> Self::Output {
+        match self {
+            parser::Declaration::Variable(variable_declaration) => variable_declaration.to_tacky(),
+            parser::Declaration::Function(func_declaration) => {
+                assert!(
+                    func_declaration.body.is_none(),
+                    "Function definitions should not be present at this stage"
+                );
+                vec![]
+            }
+        }
     }
 }
 
@@ -618,6 +683,42 @@ impl ToTacky for parser::Primary {
             parser::Primary::Constant(val) => (vec![], Value::Constant(val)),
             parser::Primary::Paren(expression) => expression.to_tacky(),
             parser::Primary::Var(identifier) => (vec![], Value::Var(identifier)),
+            parser::Primary::FunctionCall(identifier, argument_list) => {
+                let (mut instructions, args) = argument_list.to_tacky();
+                let dst = next_func_result_var(&identifier);
+                instructions.push(Instruction::FunCall {
+                    name: identifier,
+                    args,
+                    dst: dst.clone(),
+                });
+                (instructions, dst)
+            }
         }
+    }
+}
+
+impl ToTacky for parser::ArgumentList {
+    type Output = (Vec<Instruction>, Vec<Value>);
+
+    fn to_tacky(self) -> Self::Output {
+        self.0
+            .into_iter()
+            .map(|arg| {
+                let (mut instructions, val) = arg.to_tacky();
+                let arg_val = next_argument_var();
+                instructions.push(Instruction::Copy {
+                    src: val,
+                    dst: arg_val.clone(),
+                });
+                (instructions, arg_val)
+            })
+            .fold(
+                (Vec::new(), Vec::new()),
+                |(mut acc_instructions, mut acc_values), (instructions, values)| {
+                    acc_instructions.extend(instructions);
+                    acc_values.push(values);
+                    (acc_instructions, acc_values)
+                },
+            )
     }
 }

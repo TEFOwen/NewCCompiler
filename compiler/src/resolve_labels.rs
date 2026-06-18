@@ -10,9 +10,17 @@ fn get_unique_label_name(user_defined_name: impl Display) -> String {
 }
 
 pub fn resolve_labels(program: parser::Program) -> Result<parser::Program, SemanticError> {
-    let mut labels = HashMap::new();
-    let program = program.collect_labels(&mut labels)?;
-    program.resolve_labels(&mut labels)
+    Ok(parser::Program(
+        program
+            .0
+            .into_iter()
+            .map(|func_def| {
+                let mut labels = HashMap::new();
+                let func_def = func_def.collect_labels(&mut labels)?;
+                func_def.resolve_labels(&mut labels)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    ))
 }
 
 trait CollectLabels
@@ -22,17 +30,15 @@ where
     fn collect_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError>;
 }
 
-impl CollectLabels for parser::Program {
+impl CollectLabels for parser::FuncDeclaration {
     fn collect_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
-        Ok(parser::Program(self.0.collect_labels(labels)?))
-    }
-}
-
-impl CollectLabels for parser::FuncDef {
-    fn collect_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
-        Ok(parser::FuncDef {
-            name: self.name,
-            body: self.body.collect_labels(labels)?,
+        Ok(parser::FuncDeclaration {
+            identifier: self.identifier,
+            parameters: self.parameters,
+            body: self
+                .body
+                .map(|body| body.collect_labels(labels))
+                .transpose()?,
         })
     }
 }
@@ -131,15 +137,19 @@ impl CollectLabels for parser::Statement {
                 Box::new(statement.collect_labels(labels)?),
                 label,
             )),
-            parser::Statement::Switch(expression, statement, label, cases, default_exists) => {
-                Ok(parser::Statement::Switch(
-                    expression,
-                    Box::new(statement.collect_labels(labels)?),
-                    label,
-                    cases,
-                    default_exists,
-                ))
-            }
+            parser::Statement::Switch {
+                condition,
+                body,
+                label,
+                cases,
+                default_exists,
+            } => Ok(parser::Statement::Switch {
+                condition,
+                body: Box::new(body.collect_labels(labels)?),
+                label,
+                cases,
+                default_exists,
+            }),
         }
     }
 }
@@ -151,17 +161,15 @@ where
     fn resolve_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError>;
 }
 
-impl ResolveLabels for parser::Program {
+impl ResolveLabels for parser::FuncDeclaration {
     fn resolve_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
-        Ok(parser::Program(self.0.resolve_labels(labels)?))
-    }
-}
-
-impl ResolveLabels for parser::FuncDef {
-    fn resolve_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
-        Ok(parser::FuncDef {
-            name: self.name,
-            body: self.body.resolve_labels(labels)?,
+        Ok(parser::FuncDeclaration {
+            identifier: self.identifier,
+            parameters: self.parameters,
+            body: self
+                .body
+                .map(|body| body.resolve_labels(labels))
+                .transpose()?,
         })
     }
 }
@@ -258,15 +266,19 @@ impl ResolveLabels for parser::Statement {
                 Box::new(statement.resolve_labels(labels)?),
                 label,
             )),
-            parser::Statement::Switch(expression, statement, label, cases, default_exists) => {
-                Ok(Self::Switch(
-                    expression,
-                    Box::new(statement.resolve_labels(labels)?),
-                    label,
-                    cases,
-                    default_exists,
-                ))
-            }
+            parser::Statement::Switch {
+                condition,
+                body,
+                label,
+                cases,
+                default_exists,
+            } => Ok(parser::Statement::Switch {
+                condition,
+                body: Box::new(body.resolve_labels(labels)?),
+                label,
+                cases,
+                default_exists,
+            }),
         }
     }
 }

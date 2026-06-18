@@ -41,6 +41,7 @@ impl IsLvalue for parser::Primary {
             parser::Primary::Constant(_) => false,
             parser::Primary::Var(_) => true,
             parser::Primary::Paren(expression) => expression.is_lvalue(),
+            parser::Primary::FunctionCall(_, _) => false,
         }
     }
 }
@@ -54,16 +55,24 @@ where
 
 impl ResolveLvalues for parser::Program {
     fn resolve_lvalues(self) -> Result<Self, SemanticError> {
-        self.0.resolve_lvalues().map(parser::Program)
+        self.0
+            .into_iter()
+            .map(|item| item.resolve_lvalues())
+            .collect::<Result<_, _>>()
+            .map(parser::Program)
     }
 }
 
-impl ResolveLvalues for parser::FuncDef {
+impl ResolveLvalues for parser::FuncDeclaration {
     fn resolve_lvalues(self) -> Result<Self, SemanticError> {
-        self.body.resolve_lvalues().map(|body| parser::FuncDef {
-            name: self.name,
-            body,
-        })
+        self.body
+            .map(|body| body.resolve_lvalues())
+            .transpose()
+            .map(|body| parser::FuncDeclaration {
+                identifier: self.identifier,
+                parameters: self.parameters,
+                body,
+            })
     }
 }
 
@@ -92,6 +101,19 @@ impl ResolveLvalues for parser::BlockItem {
 }
 
 impl ResolveLvalues for parser::Declaration {
+    fn resolve_lvalues(self) -> Result<Self, SemanticError> {
+        match self {
+            parser::Declaration::Variable(variable_declaration) => variable_declaration
+                .resolve_lvalues()
+                .map(parser::Declaration::Variable),
+            parser::Declaration::Function(func_declaration) => func_declaration
+                .resolve_lvalues()
+                .map(parser::Declaration::Function),
+        }
+    }
+}
+
+impl ResolveLvalues for parser::VariableDeclaration {
     fn resolve_lvalues(self) -> Result<Self, SemanticError> {
         Ok(self)
     }
@@ -165,29 +187,33 @@ impl ResolveLvalues for parser::Statement {
             parser::Statement::Default(statement, label) => statement
                 .resolve_lvalues()
                 .map(|stmt| parser::Statement::Default(Box::new(stmt), label)),
-            parser::Statement::Switch(expression, statement, label, cases, default_exists) => {
-                Ok(parser::Statement::Switch(
-                    expression.resolve_lvalues()?,
-                    Box::new(statement.resolve_lvalues()?),
-                    label,
-                    cases,
-                    default_exists,
-                ))
-            }
+            parser::Statement::Switch {
+                condition,
+                body,
+                label,
+                cases,
+                default_exists,
+            } => Ok(parser::Statement::Switch {
+                condition: condition.resolve_lvalues()?,
+                body: Box::new(body.resolve_lvalues()?),
+                label,
+                cases,
+                default_exists,
+            }),
         }
     }
 }
 
-impl ResolveLvalues for parser::InitExp {
+impl ResolveLvalues for parser::ForInit {
     fn resolve_lvalues(self) -> Result<Self, SemanticError> {
         match self {
-            parser::InitExp::Declaration(declaration) => declaration
+            parser::ForInit::Declaration(declaration) => declaration
                 .resolve_lvalues()
-                .map(parser::InitExp::Declaration),
-            parser::InitExp::Expression(expression) => expression
+                .map(parser::ForInit::Declaration),
+            parser::ForInit::Expression(expression) => expression
                 .map(|expr| expr.resolve_lvalues())
                 .transpose()
-                .map(parser::InitExp::Expression),
+                .map(parser::ForInit::Expression),
         }
     }
 }
@@ -268,11 +294,12 @@ impl ResolveLvalues for parser::Postfix {
 impl ResolveLvalues for parser::Primary {
     fn resolve_lvalues(self) -> Result<Self, SemanticError> {
         match self {
-            Self::Constant(val) => Ok(Self::Constant(val)),
-            Self::Var(identifier) => Ok(Self::Var(identifier)),
-            Self::Paren(expression) => expression
+            parser::Primary::Constant(val) => Ok(parser::Primary::Constant(val)),
+            parser::Primary::Var(identifier) => Ok(parser::Primary::Var(identifier)),
+            parser::Primary::Paren(expression) => expression
                 .resolve_lvalues()
-                .map(|expression| Self::Paren(Box::new(expression))),
+                .map(|expression| parser::Primary::Paren(Box::new(expression))),
+            parser::Primary::FunctionCall(_, _) => Ok(self),
         }
     }
 }
