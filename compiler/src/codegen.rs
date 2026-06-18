@@ -147,7 +147,7 @@ impl ToAssembly for tacky::FuncDef {
                     .into_iter()
                     .enumerate()
                     .map(|(i, param)| Instruction::Move {
-                        src: Operand::Stack(-(16 + i as i32 * 8)),
+                        src: Operand::Stack(16 + i as i32 * 8),
                         dst: Operand::Pseudo(param),
                     }),
             );
@@ -434,7 +434,7 @@ impl Program {
                         stack_size += size;
                         stack_size
                     });
-                    *operand = Operand::Stack(stack_offset);
+                    *operand = Operand::Stack(-stack_offset);
                 }
             };
 

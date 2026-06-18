@@ -86,7 +86,7 @@ fn operand_to_string(operand: &Operand, size: RegisterSize) -> String {
                 }
             ),
         },
-        Operand::Stack(offset) => format!("-{}(%rbp)", offset),
+        Operand::Stack(offset) => format!("{}(%rbp)", offset),
         Operand::Pseudo(_) => unreachable!(
             "Pseudo operands should have been replaced by stack offsets in codegen::Program::update_pseudo_operands()"
         ),
