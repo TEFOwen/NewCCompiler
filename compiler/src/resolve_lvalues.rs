@@ -72,6 +72,7 @@ impl ResolveLvalues for parser::FuncDeclaration {
                 identifier: self.identifier,
                 parameters: self.parameters,
                 body,
+                storage_class: self.storage_class,
             })
     }
 }

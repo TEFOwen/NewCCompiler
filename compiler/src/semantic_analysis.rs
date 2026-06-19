@@ -38,10 +38,10 @@ pub fn resolve_program(
 
 #[derive(Debug, Error)]
 pub enum SemanticError {
-    #[error("Variable already declared: {0}")]
-    VariableAlreadyDeclared(String),
-    #[error("Variable not declared: {0}")]
-    VariableNotDeclared(String),
+    #[error("Identifier already declared: {0}")]
+    IdentifierAlreadyDeclared(String),
+    #[error("Identifier not declared: {0}")]
+    IdentifierNotDeclared(String),
     #[error("Invalid lvalue: {0:?}")]
     InvalidLvalue(parser::Expression),
     #[error("Label not declared: {0}")]
@@ -70,4 +70,16 @@ pub enum SemanticError {
     FunctionDefinedMoreThanOnce(String),
     #[error("Incorrect type: {0}")]
     TypeMismatch(String),
+    #[error("Conflicting local declarations for {0}")]
+    ConflictingLocalDeclarations(String),
+    #[error("Invalid storage class for {0}")]
+    InvalidStorageClass(String),
+    #[error("Static function {0} cannot be declared after a non-static declaration")]
+    StaticAfterNonStatic(String),
+    #[error("Conflicting variable linkage for {0}")]
+    ConflictingVariableLinkage(String),
+    #[error("Conflicting file scope declarations for {0}")]
+    ConflictingFileScopeDeclarations(String),
+    #[error("Initialiser on local extern variable {0}")]
+    InitOnLocalExtern(String),
 }

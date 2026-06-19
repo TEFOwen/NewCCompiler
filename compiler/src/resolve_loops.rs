@@ -74,6 +74,7 @@ impl ResolveLoops for parser::FuncDeclaration {
         Ok(parser::FuncDeclaration {
             identifier: self.identifier,
             parameters: self.parameters,
+            storage_class: self.storage_class,
             body: self
                 .body
                 .map(|body| {
@@ -174,6 +175,7 @@ impl ResolveLoops for parser::Declaration {
                         identifier: func_declaration.identifier,
                         parameters: func_declaration.parameters,
                         body,
+                        storage_class: func_declaration.storage_class,
                     })
                 }),
         }

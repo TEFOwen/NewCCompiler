@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{parser, tacky};
+use crate::{parser, resolve_types::SymbolTable, tacky};
 
 static ARG_REGISTERS: &[Register] = &[
     Register::DI,
@@ -12,13 +12,21 @@ static ARG_REGISTERS: &[Register] = &[
 ];
 
 #[derive(Debug)]
-pub struct Program(pub Vec<FuncDef>);
+pub struct Program(pub Vec<TopLevel>);
 
 #[derive(Debug)]
-pub struct FuncDef {
-    pub identifier: String,
-    pub body: Vec<Instruction>,
-    pub stack_size: Option<usize>,
+pub enum TopLevel {
+    Function {
+        name: String,
+        global: bool,
+        instructions: Vec<Instruction>,
+        stack_size: Option<usize>,
+    },
+    StaticVariable {
+        name: String,
+        global: bool,
+        init: i32,
+    },
 }
 
 #[derive(Debug)]
@@ -88,12 +96,19 @@ pub enum UnaryOperator {
     Negate,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Operand {
     Immediate(u32),
     Register(Register),
     Pseudo(String),
     Stack(i32),
+    Data(String),
+}
+
+impl Operand {
+    fn is_memory_operand(&self) -> bool {
+        matches!(self, Operand::Stack(_) | Operand::Data(_))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -122,47 +137,54 @@ impl ToAssembly for tacky::Program {
         Program(
             self.0
                 .into_iter()
-                .map(|func_def| func_def.to_assembly())
+                .map(|top_level| match top_level {
+                    tacky::TopLevel::FunctionDefinition {
+                        identifier,
+                        params,
+                        body,
+                        global,
+                    } => {
+                        let reg_params = params.iter().take(6).cloned().collect::<Vec<_>>();
+                        let stack_params = params.iter().skip(6).cloned().collect::<Vec<_>>();
+
+                        let param_copies = reg_params
+                            .into_iter()
+                            .zip(ARG_REGISTERS.iter())
+                            .map(|(param, register)| Instruction::Move {
+                                src: Operand::Register(*register),
+                                dst: Operand::Pseudo(param),
+                            })
+                            .chain(stack_params.into_iter().enumerate().map(|(i, param)| {
+                                Instruction::Move {
+                                    src: Operand::Stack(16 + i as i32 * 8),
+                                    dst: Operand::Pseudo(param),
+                                }
+                            }));
+
+                        TopLevel::Function {
+                            name: identifier,
+                            instructions: param_copies
+                                .chain(
+                                    body.into_iter()
+                                        .flat_map(|instruction| instruction.to_assembly()),
+                                )
+                                .collect(),
+                            stack_size: None,
+                            global,
+                        }
+                    }
+                    tacky::TopLevel::StaticVariable {
+                        identifier,
+                        init,
+                        global,
+                    } => TopLevel::StaticVariable {
+                        name: identifier,
+                        init,
+                        global,
+                    },
+                })
                 .collect(),
         )
-    }
-}
-
-impl ToAssembly for tacky::FuncDef {
-    type Output = FuncDef;
-
-    fn to_assembly(self) -> Self::Output {
-        let reg_params = self.params.iter().take(6).cloned().collect::<Vec<_>>();
-        let stack_params = self.params.iter().skip(6).cloned().collect::<Vec<_>>();
-
-        let param_copies = reg_params
-            .into_iter()
-            .zip(ARG_REGISTERS.iter())
-            .map(|(param, register)| Instruction::Move {
-                src: Operand::Register(*register),
-                dst: Operand::Pseudo(param),
-            })
-            .chain(
-                stack_params
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, param)| Instruction::Move {
-                        src: Operand::Stack(16 + i as i32 * 8),
-                        dst: Operand::Pseudo(param),
-                    }),
-            );
-
-        FuncDef {
-            identifier: self.identifier,
-            body: param_copies
-                .chain(
-                    self.body
-                        .into_iter()
-                        .flat_map(|instruction| instruction.to_assembly()),
-                )
-                .collect(),
-            stack_size: None,
-        }
     }
 }
 
@@ -423,22 +445,35 @@ impl ToAssembly for tacky::Value {
 
 impl Program {
     /// Replace pseudo operands with stack offsets and calculate stack size
-    fn update_pseudo_operands(&mut self) {
-        for func in self.0.iter_mut() {
-            let mut var_map = HashMap::new();
+    fn update_pseudo_operands(&mut self, symbol_table: &SymbolTable) {
+        for (instructions, func_stack_size) in
+            self.0.iter_mut().filter_map(|top_level| match top_level {
+                TopLevel::Function {
+                    instructions,
+                    stack_size,
+                    ..
+                } => Some((instructions, stack_size)),
+                TopLevel::StaticVariable { .. } => None,
+            })
+        {
+            let mut var_map = HashMap::<String, i32>::new();
             let mut stack_size = 0i32;
 
             let mut update_operand = |operand: &mut Operand, size: i32| {
                 if let Operand::Pseudo(name) = operand {
-                    let stack_offset = *var_map.entry(name.clone()).or_insert_with(|| {
+                    if let Some(stack_offset) = var_map.get(name) {
+                        *operand = Operand::Stack(-*stack_offset);
+                    } else if symbol_table.is_static_var(name.clone()) {
+                        *operand = Operand::Data(name.clone());
+                    } else {
                         stack_size += size;
-                        stack_size
-                    });
-                    *operand = Operand::Stack(-stack_offset);
+                        var_map.insert(name.clone(), stack_size);
+                        *operand = Operand::Stack(-stack_size);
+                    }
                 }
             };
 
-            for instruction in &mut func.body {
+            for instruction in instructions {
                 match instruction {
                     Instruction::Move { src, dst } => {
                         update_operand(dst, 4);
@@ -471,94 +506,94 @@ impl Program {
                 }
             }
 
-            func.stack_size = Some(stack_size as usize);
+            *func_stack_size = Some(stack_size as usize);
         }
     }
 
     fn final_pass(&mut self) {
-        for func_def in self.0.iter_mut() {
-            let instructions = std::mem::take(&mut func_def.body);
+        for (func_instructions, func_stack_size) in
+            self.0.iter_mut().filter_map(|top_level| match top_level {
+                TopLevel::Function {
+                    instructions,
+                    stack_size,
+                    ..
+                } => Some((instructions, stack_size)),
+                TopLevel::StaticVariable { .. } => None,
+            })
+        {
+            let instructions = std::mem::take(func_instructions);
 
-            let mut stack_size = func_def
-                .stack_size
-                .expect("No stack size found for function");
+            let mut stack_size = func_stack_size.expect("No stack size found for function");
             if stack_size % 16 != 0 {
                 let padding = 16 - (stack_size % 16);
                 stack_size += padding;
             }
-            func_def
-                .body
-                .push(Instruction::AllocateStack { size: stack_size });
+            func_instructions.push(Instruction::AllocateStack { size: stack_size });
 
             for instruction in instructions {
                 match instruction {
-                    Instruction::Move {
-                        src: Operand::Stack(src),
-                        dst: Operand::Stack(dst),
-                    } => {
-                        func_def.body.push(Instruction::Move {
-                            src: Operand::Stack(src),
+                    Instruction::Move { src, dst }
+                        if src.is_memory_operand() && dst.is_memory_operand() =>
+                    {
+                        func_instructions.push(Instruction::Move {
+                            src,
                             dst: Operand::Register(Register::R10),
                         });
-                        func_def.body.push(Instruction::Move {
+                        func_instructions.push(Instruction::Move {
                             src: Operand::Register(Register::R10),
-                            dst: Operand::Stack(dst),
+                            dst,
                         });
                     }
                     Instruction::Idiv(Operand::Immediate(val)) => {
-                        func_def.body.push(Instruction::Move {
+                        func_instructions.push(Instruction::Move {
                             src: Operand::Immediate(val),
                             dst: Operand::Register(Register::R10),
                         });
-                        func_def
-                            .body
-                            .push(Instruction::Idiv(Operand::Register(Register::R10)));
+                        func_instructions.push(Instruction::Idiv(Operand::Register(Register::R10)));
                     }
-                    Instruction::BinaryOp {
-                        op,
-                        src: Operand::Stack(src),
-                        dst: Operand::Stack(dst),
-                    } if matches!(
-                        op,
-                        BinaryOperator::Add
-                            | BinaryOperator::Sub
-                            | BinaryOperator::BitAnd
-                            | BinaryOperator::BitOr
-                            | BinaryOperator::BitXor
-                    ) =>
+                    Instruction::BinaryOp { op, src, dst }
+                        if src.is_memory_operand()
+                            && dst.is_memory_operand()
+                            && matches!(
+                                op,
+                                BinaryOperator::Add
+                                    | BinaryOperator::Sub
+                                    | BinaryOperator::BitAnd
+                                    | BinaryOperator::BitOr
+                                    | BinaryOperator::BitXor
+                            ) =>
                     {
-                        func_def.body.push(Instruction::Move {
-                            src: Operand::Stack(src),
+                        func_instructions.push(Instruction::Move {
+                            src,
                             dst: Operand::Register(Register::R10),
                         });
-                        func_def.body.push(Instruction::BinaryOp {
+                        func_instructions.push(Instruction::BinaryOp {
                             op,
                             src: Operand::Register(Register::R10),
-                            dst: Operand::Stack(dst),
+                            dst,
                         });
                     }
-                    Instruction::Cmp {
-                        val1: Operand::Stack(val1),
-                        val2: Operand::Stack(val2),
-                    } => {
-                        func_def.body.push(Instruction::Move {
-                            src: Operand::Stack(val1),
+                    Instruction::Cmp { val1, val2 }
+                        if val1.is_memory_operand() && val2.is_memory_operand() =>
+                    {
+                        func_instructions.push(Instruction::Move {
+                            src: val1,
                             dst: Operand::Register(Register::R10),
                         });
-                        func_def.body.push(Instruction::Cmp {
+                        func_instructions.push(Instruction::Cmp {
                             val1: Operand::Register(Register::R10),
-                            val2: Operand::Stack(val2),
+                            val2,
                         });
                     }
                     Instruction::Cmp {
                         val1,
                         val2: Operand::Immediate(i),
                     } => {
-                        func_def.body.push(Instruction::Move {
+                        func_instructions.push(Instruction::Move {
                             src: Operand::Immediate(i),
                             dst: Operand::Register(Register::R11),
                         });
-                        func_def.body.push(Instruction::Cmp {
+                        func_instructions.push(Instruction::Cmp {
                             val1,
                             val2: Operand::Register(Register::R11),
                         });
@@ -566,45 +601,45 @@ impl Program {
                     Instruction::BinaryOp {
                         op: BinaryOperator::Mult,
                         src,
-                        dst: Operand::Stack(dst),
-                    } => {
-                        func_def.body.push(Instruction::Move {
-                            src: Operand::Stack(dst),
+                        dst,
+                    } if dst.is_memory_operand() => {
+                        func_instructions.push(Instruction::Move {
+                            src: dst.clone(),
                             dst: Operand::Register(Register::R11),
                         });
-                        func_def.body.push(Instruction::BinaryOp {
+                        func_instructions.push(Instruction::BinaryOp {
                             op: BinaryOperator::Mult,
                             src,
                             dst: Operand::Register(Register::R11),
                         });
-                        func_def.body.push(Instruction::Move {
+                        func_instructions.push(Instruction::Move {
                             src: Operand::Register(Register::R11),
-                            dst: Operand::Stack(dst),
+                            dst,
                         });
                     }
                     Instruction::Shift { left, shift, val }
                         if !matches!(shift, Operand::Immediate(_)) =>
                     {
-                        func_def.body.push(Instruction::Move {
+                        func_instructions.push(Instruction::Move {
                             src: shift,
                             dst: Operand::Register(Register::CX),
                         });
-                        func_def.body.push(Instruction::Shift {
+                        func_instructions.push(Instruction::Shift {
                             left,
                             shift: Operand::Register(Register::CX),
                             val,
                         });
                     }
-                    instruction => func_def.body.push(instruction),
+                    instruction => func_instructions.push(instruction),
                 }
             }
         }
     }
 }
 
-pub fn to_assembly(program: tacky::Program) -> Program {
+pub fn to_assembly(program: tacky::Program, symbol_table: &SymbolTable) -> Program {
     let mut program = program.to_assembly();
-    program.update_pseudo_operands();
+    program.update_pseudo_operands(symbol_table);
     program.final_pass();
 
     program

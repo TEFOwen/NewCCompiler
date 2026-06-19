@@ -135,14 +135,14 @@ fn compile_file(
         }
     };
 
-    let tacky = compiler::tacky::ToTacky::to_tacky(resolved_ast);
+    let tacky = compiler::tacky::ToTacky::to_tacky(resolved_ast, &symbol_table);
 
     if compile_options.tacky {
         println!("TACKY IR: {:#?}", tacky);
         return Ok(None);
     }
 
-    let assembly = compiler::codegen::to_assembly(tacky);
+    let assembly = compiler::codegen::to_assembly(tacky, &symbol_table);
 
     if compile_options.codegen {
         println!("Assembly: {:#?}", assembly);
@@ -158,6 +158,8 @@ fn compile_file(
     }
 
     Ok(Some(assembly_path))
+
+    // Ok(None)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

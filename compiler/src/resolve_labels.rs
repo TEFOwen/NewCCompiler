@@ -14,10 +14,15 @@ pub fn resolve_labels(program: parser::Program) -> Result<parser::Program, Seman
         program
             .0
             .into_iter()
-            .map(|func_def| {
-                let mut labels = HashMap::new();
-                let func_def = func_def.collect_labels(&mut labels)?;
-                func_def.resolve_labels(&mut labels)
+            .map(|declaration| match declaration {
+                parser::Declaration::Variable(_) => Ok(declaration),
+                parser::Declaration::Function(func_def) => {
+                    let mut labels = HashMap::new();
+                    let func_def = func_def.collect_labels(&mut labels)?;
+                    func_def
+                        .resolve_labels(&mut labels)
+                        .map(parser::Declaration::Function)
+                }
             })
             .collect::<Result<Vec<_>, _>>()?,
     ))
@@ -39,6 +44,7 @@ impl CollectLabels for parser::FuncDeclaration {
                 .body
                 .map(|body| body.collect_labels(labels))
                 .transpose()?,
+            storage_class: self.storage_class,
         })
     }
 }
@@ -170,6 +176,7 @@ impl ResolveLabels for parser::FuncDeclaration {
                 .body
                 .map(|body| body.resolve_labels(labels))
                 .transpose()?,
+            storage_class: self.storage_class,
         })
     }
 }

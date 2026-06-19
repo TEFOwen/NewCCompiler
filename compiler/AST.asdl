@@ -1,7 +1,8 @@
-program = Program(function_declaration*)
+program = Program(declaration*)
 declaration = FuncDecl(function_declaration) | VarDecl(variable_declaration)
-function_declaration = (identifier name, identifier* params, block? body) 
-variable_declaration = (identifier name, exp? init)
+function_declaration = (identifier name, identifier* params, block? body, storage_class?) 
+variable_declaration = (identifier name, exp? init, storage_class?)
+storage_class = Static | Extern
 block = Block(block_item*)
 block_item = S(statement) | D(declaration)
 statement = Return(exp)

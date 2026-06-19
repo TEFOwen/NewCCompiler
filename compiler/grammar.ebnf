@@ -1,8 +1,9 @@
-<program> ::= {<function-declaration>}
+<program> ::= {<declaration>}
 <declaration> ::= <variable-declaration> | <function-declaration>
-<variable-declaration> ::= "int" <identifier> ["=" <exp>] ";"
-<function-declaration> ::= "int" <identifier> "(" <paramlist> ")" (<block> | ";")
+<variable-declaration> ::= {<specifier>}+ <identifier> ["=" <exp>] ";"
+<function-declaration> ::= {<specifier>}+ <identifier> "(" <paramlist> ")" (<block> | ";")
 <param-list> ::= "void" | "int" <identifier> {"," "int" <identifier>}
+<specifier> ::= "static" | "extern" | "int"
 <block> ::= "{" {<block-item} "}"
 <block-item> ::= <statement> | <declaration>
 <statement> ::= "return" <exp> ";"

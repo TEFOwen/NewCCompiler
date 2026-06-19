@@ -1,5 +1,6 @@
-program = Program(function_definition*)
-function_definition = Function(identifier, identifier* params, instruction* body)
+program = Program(top_level*)
+top_level = Function(identifier, bool global, identifier* params, instruction* body)
+            | StaticVariable(identifier, bool global, int init)
 instruction = Return(val)
             | Unary(unary_operator, val src, val dst)
             | Binary(binary_operator, val src, val src2, val dst)

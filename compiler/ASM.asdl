@@ -1,5 +1,6 @@
-program = Program(function_definition*)
-function_definition = Function(identifier name, instruction* instructions)
+program = Program(top_level*)
+top_level = Function(identifier, bool global, instruction* instructions)
+            | StaticVariable(identifier, bool global, int init)
 instruction = Mov(operand src, operand dst)
             | Unary(unary_operator, operand)
             | Binary(binary_operator, operand, operand)
@@ -18,6 +19,6 @@ instruction = Mov(operand src, operand dst)
             | Ret
 unary_operator = Neg | Not
 binary_operator = Add | Sub | Mult
-operand = Imm(int) | Register(reg) | Pseudo(identifier) | Stack(int)
+operand = Imm(int) | Register(reg) | Pseudo(identifier) | Stack(int) | Data(identifier)
 cond_code = E | NE | G | GE | L | LE
 reg = AX | CX | DX | DI | SI | R8 | R9 | R10 | R11

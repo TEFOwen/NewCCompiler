@@ -6,13 +6,20 @@ use thiserror::Error;
 pub enum ParserError {
     #[error("Unexpected token: expected {expected}, found {found}")]
     UnexpectedToken { expected: String, found: Token },
-
     #[error("End of token stream")]
     EndOfTokenStream,
+    #[error("Invalid type or storage class: {0}")]
+    InvalidTypeOrStorageClass(Token),
+    #[error("Invalid type")]
+    InvalidType,
+    #[error("Invalid storage class")]
+    InvalidStorageClass,
+    #[error("Function declaration in for loop initializer is not allowed")]
+    FunctionDeclarationInForInit,
 }
 
 #[derive(Debug, Clone)]
-pub struct Program(pub Vec<FuncDeclaration>);
+pub struct Program(pub Vec<Declaration>);
 
 #[derive(Debug, Clone)]
 pub enum Declaration {
@@ -25,10 +32,24 @@ pub struct FuncDeclaration {
     pub identifier: String,
     pub parameters: ParamList,
     pub body: Option<Block>,
+    pub storage_class: Option<StorageClass>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VariableDeclaration {
+    pub identifier: String,
+    pub initialiser: Option<Expression>,
+    pub storage_class: Option<StorageClass>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ParamList(pub Vec<String>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageClass {
+    Static,
+    Extern,
+}
 
 #[derive(Debug, Clone)]
 pub struct Block(pub Vec<BlockItem>);
@@ -37,12 +58,6 @@ pub struct Block(pub Vec<BlockItem>);
 pub enum BlockItem {
     Statement(Statement),
     Declaration(Declaration),
-}
-
-#[derive(Debug, Clone)]
-pub struct VariableDeclaration {
-    pub identifier: String,
-    pub initialiser: Option<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,48 +226,121 @@ macro_rules! expect_token {
 
 impl ToAst for Program {
     fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
-        let mut funcs = Vec::new();
+        let mut declaration = Vec::new();
         while !matches!(tokens.peek(), Some(Token(TokenType::EndOfFile, _))) {
             tokens.reset_peek();
-            funcs.push(FuncDeclaration::to_ast(tokens)?);
+            declaration.push(Declaration::to_ast(tokens)?);
         }
         expect_token!(tokens, TokenType::EndOfFile, "end of file");
 
-        Ok(Program(funcs))
+        Ok(Program(declaration))
     }
 }
 
-impl ToAst for FuncDeclaration {
+fn parse_types_and_storage_class(
+    tokens: impl IntoIterator<Item = Token>,
+) -> Result<Option<StorageClass>, ParserError> {
+    let mut types = Vec::new();
+    let mut storage_classes = Vec::new();
+
+    for token in tokens {
+        match token.0 {
+            TokenType::Keyword(Keyword::Int) => types.push(token.0),
+            TokenType::Keyword(Keyword::Static | Keyword::Extern) => storage_classes.push(token.0),
+            _ => return Err(ParserError::InvalidTypeOrStorageClass(token)),
+        }
+    }
+
+    if types.len() != 1 {
+        return Err(ParserError::InvalidType);
+    }
+    if storage_classes.len() > 1 {
+        return Err(ParserError::InvalidStorageClass);
+    }
+
+    match storage_classes.first() {
+        Some(TokenType::Keyword(Keyword::Static)) => Ok(Some(StorageClass::Static)),
+        Some(TokenType::Keyword(Keyword::Extern)) => Ok(Some(StorageClass::Extern)),
+        None => Ok(None),
+        _ => unreachable!(),
+    }
+}
+
+trait IsSpecifier {
+    fn is_specifier(&self) -> bool;
+}
+
+impl IsSpecifier for Keyword {
+    fn is_specifier(&self) -> bool {
+        match self {
+            Keyword::Int | Keyword::Static | Keyword::Extern => true,
+            _ => false,
+        }
+    }
+}
+
+impl ToAst for Declaration {
     fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
-        expect_token!(tokens, TokenType::Keyword(Keyword::Int), "int");
+        let types_and_storage_class_tokens = tokens.peeking_take_while(
+            |token| matches!(token.0, TokenType::Keyword(kwd) if kwd.is_specifier()),
+        );
+        let storage_class = parse_types_and_storage_class(types_and_storage_class_tokens)?;
         let Token(TokenType::Identifier(identifier), _) =
-            expect_token!(tokens, TokenType::Identifier(_), "function name")
+            expect_token!(tokens, TokenType::Identifier(_), "identifier")
         else {
             unreachable!()
         };
-
-        expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
-
-        let parameters = ParamList::to_ast(tokens)?;
-
-        expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
-
-        let body = if matches!(
+        if matches!(
             tokens.peek(),
-            Some(Token(TokenType::Symbol(Symbol::Semicolon), _))
+            Some(Token(TokenType::Symbol(Symbol::OpenParen), _))
         ) {
-            tokens.next();
-            None
-        } else {
-            tokens.reset_peek();
-            Some(Block::to_ast(tokens)?)
-        };
+            tokens.next(); // Consume the '(' token
+            let parameters = ParamList::to_ast(tokens)?;
 
-        Ok(FuncDeclaration {
-            identifier,
-            parameters,
-            body,
-        })
+            expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
+
+            let body = if matches!(
+                tokens.peek(),
+                Some(Token(TokenType::Symbol(Symbol::Semicolon), _))
+            ) {
+                tokens.next();
+                None
+            } else {
+                tokens.reset_peek();
+                Some(Block::to_ast(tokens)?)
+            };
+
+            Ok(Declaration::Function(FuncDeclaration {
+                identifier,
+                parameters,
+                body,
+                storage_class,
+            }))
+        } else {
+            match expect_token!(
+                tokens,
+                TokenType::Symbol(Symbol::Equal | Symbol::Semicolon),
+                "'=' or ';'"
+            ) {
+                Token(TokenType::Symbol(Symbol::Equal), _) => {
+                    let initialiser = Some(Expression::to_ast(tokens)?);
+                    expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
+                    Ok(Declaration::Variable(VariableDeclaration {
+                        identifier,
+                        initialiser,
+                        storage_class,
+                    }))
+                }
+                Token(TokenType::Symbol(Symbol::Semicolon), _) => {
+                    Ok(Declaration::Variable(VariableDeclaration {
+                        identifier,
+                        initialiser: None,
+                        storage_class,
+                    }))
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }
 
@@ -315,7 +403,10 @@ impl ToAst for BlockItem {
     fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
         if matches!(
             tokens.peek(),
-            Some(Token(TokenType::Keyword(Keyword::Int), _))
+            Some(Token(
+                TokenType::Keyword(kwd),
+                _
+            )) if kwd.is_specifier()
         ) {
             tokens.reset_peek();
             Ok(BlockItem::Declaration(Declaration::to_ast(tokens)?))
@@ -323,51 +414,6 @@ impl ToAst for BlockItem {
             tokens.reset_peek();
             Ok(BlockItem::Statement(Statement::to_ast(tokens)?))
         }
-    }
-}
-
-impl ToAst for Declaration {
-    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
-        tokens.peek(); // int
-        tokens.peek(); // identifier
-        if matches!(
-            tokens.peek(),
-            Some(Token(TokenType::Symbol(Symbol::OpenParen), _))
-        ) {
-            tokens.reset_peek();
-            Ok(Declaration::Function(FuncDeclaration::to_ast(tokens)?))
-        } else {
-            tokens.reset_peek();
-            Ok(Declaration::Variable(VariableDeclaration::to_ast(tokens)?))
-        }
-    }
-}
-
-impl ToAst for VariableDeclaration {
-    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
-        expect_token!(tokens, TokenType::Keyword(Keyword::Int), "int");
-        let Token(TokenType::Identifier(identifier), _) =
-            expect_token!(tokens, TokenType::Identifier(_), "variable name")
-        else {
-            unreachable!()
-        };
-
-        let initialiser = if matches!(
-            tokens.peek(),
-            Some(Token(TokenType::Symbol(Symbol::Equal), _))
-        ) {
-            tokens.next();
-            Some(Expression::to_ast(tokens)?)
-        } else {
-            None
-        };
-
-        expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
-
-        Ok(VariableDeclaration {
-            identifier,
-            initialiser,
-        })
     }
 }
 
@@ -485,9 +531,12 @@ impl ToAst for Statement {
                 tokens.next(); // Consume the 'for' token
                 expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
                 let init = match tokens.peek() {
-                    Some(Token(TokenType::Keyword(Keyword::Int), _)) => {
+                    Some(Token(TokenType::Keyword(kwd), _)) if kwd.is_specifier() => {
                         tokens.reset_peek();
-                        ForInit::Declaration(VariableDeclaration::to_ast(tokens)?)
+                        let Declaration::Variable(var_decl) = Declaration::to_ast(tokens)? else {
+                            return Err(ParserError::FunctionDeclarationInForInit);
+                        };
+                        ForInit::Declaration(var_decl)
                     }
                     Some(Token(TokenType::Symbol(Symbol::Semicolon), _)) => {
                         tokens.next(); // Consume the ';'

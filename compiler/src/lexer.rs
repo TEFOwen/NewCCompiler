@@ -27,7 +27,7 @@ pub enum TokenType {
     EndOfFile,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
     Int,
     Void,
@@ -43,6 +43,8 @@ pub enum Keyword {
     Switch,
     Case,
     Default,
+    Static,
+    Extern,
 }
 
 impl TryFrom<&String> for Keyword {
@@ -64,6 +66,8 @@ impl TryFrom<&String> for Keyword {
             "switch" => Ok(Keyword::Switch),
             "case" => Ok(Keyword::Case),
             "default" => Ok(Keyword::Default),
+            "static" => Ok(Keyword::Static),
+            "extern" => Ok(Keyword::Extern),
             _ => Err(()),
         }
     }

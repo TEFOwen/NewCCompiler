@@ -15,73 +15,6 @@ pub fn resolve_identifiers(program: parser::Program) -> Result<parser::Program, 
     program.resolve_identifiers(&mut IdentifierResolver::default())
 }
 
-#[derive(Default)]
-struct IdentifierResolver {
-    variables: HashMap<String, IdentifierInfo>,
-}
-
-impl IdentifierResolver {
-    fn new_scope(&self) -> Self {
-        Self {
-            variables: self
-                .variables
-                .clone()
-                .into_iter()
-                .map(|(name, identifier)| (name, identifier.new_scope()))
-                .collect(),
-        }
-    }
-
-    fn resolve_identifier(&self, identifier: impl Into<String>) -> Result<String, SemanticError> {
-        let identifier = identifier.into();
-        if let Some(info) = self.variables.get(&identifier) {
-            Ok(info.unique_name.clone())
-        } else {
-            Err(SemanticError::VariableNotDeclared(identifier))
-        }
-    }
-
-    fn declare_identifier(
-        &mut self,
-        name: impl Into<String>,
-        external: bool,
-    ) -> Result<String, SemanticError> {
-        let name = name.into();
-        if !external {
-            if let Some(prev_info) = self.variables.get(&name) {
-                if prev_info.from_current_scope {
-                    return Err(SemanticError::VariableAlreadyDeclared(name));
-                }
-            }
-            let unique_name = get_unique_variable_name(name.clone());
-            self.variables.insert(
-                name,
-                IdentifierInfo {
-                    unique_name: unique_name.clone(),
-                    from_current_scope: true,
-                    has_linkage: false,
-                },
-            );
-            Ok(unique_name)
-        } else {
-            if let Some(prev_info) = self.variables.get(&name) {
-                if prev_info.from_current_scope && !prev_info.has_linkage {
-                    return Err(SemanticError::VariableAlreadyDeclared(name));
-                }
-            }
-            self.variables.insert(
-                name.clone(),
-                IdentifierInfo {
-                    unique_name: name.clone(),
-                    from_current_scope: true,
-                    has_linkage: true,
-                },
-            );
-            Ok(name)
-        }
-    }
-}
-
 #[derive(Clone)]
 struct IdentifierInfo {
     unique_name: String,
@@ -99,6 +32,128 @@ impl IdentifierInfo {
     }
 }
 
+struct IdentifierResolver {
+    identifier_map: HashMap<String, IdentifierInfo>,
+    file_scope: bool,
+}
+
+impl Default for IdentifierResolver {
+    fn default() -> Self {
+        Self {
+            identifier_map: HashMap::new(),
+            file_scope: true,
+        }
+    }
+}
+
+impl IdentifierResolver {
+    fn new_scope(&self) -> Self {
+        Self {
+            identifier_map: self
+                .identifier_map
+                .clone()
+                .into_iter()
+                .map(|(name, identifier)| (name, identifier.new_scope()))
+                .collect(),
+            file_scope: false,
+        }
+    }
+
+    fn resolve_identifier(&self, identifier: impl Into<String>) -> Result<String, SemanticError> {
+        let identifier = identifier.into();
+        if let Some(info) = self.identifier_map.get(&identifier) {
+            Ok(info.unique_name.clone())
+        } else {
+            Err(SemanticError::IdentifierNotDeclared(identifier))
+        }
+    }
+
+    fn declare_variable(
+        &mut self,
+        identifier: impl Into<String>,
+        storage_class: Option<parser::StorageClass>,
+    ) -> Result<String, SemanticError> {
+        let identifier = identifier.into();
+
+        if self.file_scope {
+            self.identifier_map.insert(
+                identifier.clone(),
+                IdentifierInfo {
+                    unique_name: identifier.clone(),
+                    from_current_scope: true,
+                    has_linkage: true,
+                },
+            );
+            Ok(identifier)
+        } else {
+            if let Some(prev_info) = self.identifier_map.get(&identifier) {
+                if prev_info.from_current_scope {
+                    if !(prev_info.has_linkage
+                        && storage_class == Some(parser::StorageClass::Extern))
+                    {
+                        return Err(SemanticError::ConflictingLocalDeclarations(identifier));
+                    }
+                }
+            }
+
+            if storage_class == Some(parser::StorageClass::Extern) {
+                self.identifier_map.insert(
+                    identifier.clone(),
+                    IdentifierInfo {
+                        unique_name: identifier.clone(),
+                        from_current_scope: true,
+                        has_linkage: true,
+                    },
+                );
+                Ok(identifier)
+            } else {
+                let unique_name = get_unique_variable_name(identifier.clone());
+                self.identifier_map.insert(
+                    identifier,
+                    IdentifierInfo {
+                        unique_name: unique_name.clone(),
+                        from_current_scope: true,
+                        has_linkage: false,
+                    },
+                );
+                Ok(unique_name)
+            }
+        }
+    }
+
+    fn declare_function(
+        &mut self,
+        identifier: impl Into<String>,
+        has_body: bool,
+        storage_class: Option<parser::StorageClass>,
+    ) -> Result<String, SemanticError> {
+        let identifier = identifier.into();
+        if !self.file_scope {
+            if has_body {
+                return Err(SemanticError::FunctionBodyInDeclaration);
+            }
+            if storage_class == Some(parser::StorageClass::Static) {
+                return Err(SemanticError::InvalidStorageClass(identifier));
+            }
+        }
+
+        if let Some(prev_info) = self.identifier_map.get(&identifier) {
+            if prev_info.from_current_scope && !prev_info.has_linkage {
+                return Err(SemanticError::IdentifierAlreadyDeclared(identifier));
+            }
+        }
+        self.identifier_map.insert(
+            identifier.clone(),
+            IdentifierInfo {
+                unique_name: identifier.clone(),
+                from_current_scope: true,
+                has_linkage: true,
+            },
+        );
+        Ok(identifier)
+    }
+}
+
 trait ResolveIdentifiers
 where
     Self: Sized,
@@ -108,19 +163,26 @@ where
 
 impl ResolveIdentifiers for parser::Program {
     fn resolve_identifiers(self, resolver: &mut IdentifierResolver) -> Result<Self, SemanticError> {
-        let mut func_defs = Vec::new();
-
-        for func_def in self.0 {
-            func_defs.push(func_def.resolve_identifiers(resolver)?);
-        }
-
-        Ok(Self(func_defs))
+        Ok(Self(
+            self.0
+                .into_iter()
+                .map(|declaration| match declaration {
+                    parser::Declaration::Variable(variable_declaration) => variable_declaration
+                        .resolve_identifiers(resolver)
+                        .map(parser::Declaration::Variable),
+                    parser::Declaration::Function(func_declaration) => func_declaration
+                        .resolve_identifiers(resolver)
+                        .map(parser::Declaration::Function),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ))
     }
 }
 
 impl ResolveIdentifiers for parser::FuncDeclaration {
     fn resolve_identifiers(self, resolver: &mut IdentifierResolver) -> Result<Self, SemanticError> {
-        let identifier = resolver.declare_identifier(self.identifier, true)?;
+        let identifier =
+            resolver.declare_function(self.identifier, self.body.is_some(), self.storage_class)?;
         let mut new_resolver = resolver.new_scope();
         let parameters = self.parameters.resolve_identifiers(&mut new_resolver)?;
 
@@ -131,6 +193,7 @@ impl ResolveIdentifiers for parser::FuncDeclaration {
                 .body
                 .map(|body| body.resolve_identifiers(&mut new_resolver))
                 .transpose()?,
+            storage_class: self.storage_class,
         })
     }
 }
@@ -140,7 +203,7 @@ impl ResolveIdentifiers for parser::ParamList {
         Ok(Self(
             self.0
                 .into_iter()
-                .map(|param| resolver.declare_identifier(param, false))
+                .map(|param| resolver.declare_variable(param, None))
                 .collect::<Result<_, _>>()?,
         ))
     }
@@ -192,13 +255,14 @@ impl ResolveIdentifiers for parser::Declaration {
 
 impl ResolveIdentifiers for parser::VariableDeclaration {
     fn resolve_identifiers(self, resolver: &mut IdentifierResolver) -> Result<Self, SemanticError> {
-        let identifier = resolver.declare_identifier(self.identifier, false)?;
+        let identifier = resolver.declare_variable(self.identifier, self.storage_class)?;
         Ok(Self {
             identifier,
             initialiser: self
                 .initialiser
                 .map(|init| init.resolve_identifiers(resolver))
                 .transpose()?,
+            storage_class: self.storage_class,
         })
     }
 }

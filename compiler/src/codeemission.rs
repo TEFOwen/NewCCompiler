@@ -90,6 +90,7 @@ fn operand_to_string(operand: &Operand, size: RegisterSize) -> String {
         Operand::Pseudo(_) => unreachable!(
             "Pseudo operands should have been replaced by stack offsets in codegen::Program::update_pseudo_operands()"
         ),
+        Operand::Data(name) => format!("{}(%rip)", name),
     }
 }
 
@@ -101,21 +102,49 @@ impl EmitCode for Program {
     fn emit_code(&self, mut out: impl Write, symbol_table: &SymbolTable) -> std::io::Result<()> {
         self.0
             .iter()
-            .try_for_each(|func_def| func_def.emit_code(&mut out, symbol_table))?;
+            .try_for_each(|top_level| top_level.emit_code(&mut out, symbol_table))?;
         writeln!(out, "\t.section .note.GNU-stack,\"\",@progbits")
     }
 }
 
-impl EmitCode for FuncDef {
+impl EmitCode for TopLevel {
     fn emit_code(&self, mut out: impl Write, symbol_table: &SymbolTable) -> std::io::Result<()> {
-        writeln!(out, "\t.globl {}", self.identifier)?;
-        writeln!(out, "{}:", self.identifier)?;
-        writeln!(out, "\tpushq %rbp")?;
-        writeln!(out, "\tmovq %rsp, %rbp")?;
-        for instr in &self.body {
-            instr.emit_code(&mut out, symbol_table)?;
+        match self {
+            TopLevel::Function {
+                name,
+                global,
+                instructions,
+                ..
+            } => {
+                if *global {
+                    writeln!(out, "\t.globl {}", name)?;
+                }
+                writeln!(out, "\t.text")?;
+                writeln!(out, "{}:", name)?;
+                writeln!(out, "\tpushq %rbp")?;
+                writeln!(out, "\tmovq %rsp, %rbp")?;
+                for instr in instructions {
+                    instr.emit_code(&mut out, symbol_table)?;
+                }
+                Ok(())
+            }
+            TopLevel::StaticVariable { name, global, init } => {
+                if *global {
+                    writeln!(out, "\t.globl {}", name)?;
+                }
+                if *init == 0 {
+                    writeln!(out, "\t.bss")?;
+                    writeln!(out, "\t.align 4")?;
+                    writeln!(out, "{}:", name)?;
+                    writeln!(out, "\t.zero 4")
+                } else {
+                    writeln!(out, "\t.data")?;
+                    writeln!(out, "\t.align 4")?;
+                    writeln!(out, "{}:", name)?;
+                    writeln!(out, "\t.long {}", init)
+                }
+            }
         }
-        Ok(())
     }
 }
 
