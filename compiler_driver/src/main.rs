@@ -135,31 +135,31 @@ fn compile_file(
         }
     };
 
-    let tacky = compiler::tacky::ToTacky::to_tacky(resolved_ast, &symbol_table);
+    // let tacky = compiler::tacky::ToTacky::to_tacky(resolved_ast, &symbol_table);
 
-    if compile_options.tacky {
-        println!("TACKY IR: {:#?}", tacky);
-        return Ok(None);
-    }
+    // if compile_options.tacky {
+    //     println!("TACKY IR: {:#?}", tacky);
+    //     return Ok(None);
+    // }
 
-    let assembly = compiler::codegen::to_assembly(tacky, &symbol_table);
+    // let assembly = compiler::codegen::to_assembly(tacky, &symbol_table);
 
-    if compile_options.codegen {
-        println!("Assembly: {:#?}", assembly);
-        return Ok(None);
-    }
+    // if compile_options.codegen {
+    //     println!("Assembly: {:#?}", assembly);
+    //     return Ok(None);
+    // }
 
-    let assembly_path = input_path.with_extension("s");
-    let assembly_file = File::create(&assembly_path)?;
-    compiler::codeemission::EmitCode::emit_code(&assembly, assembly_file, &symbol_table)?;
+    // let assembly_path = input_path.with_extension("s");
+    // let assembly_file = File::create(&assembly_path)?;
+    // compiler::codeemission::EmitCode::emit_code(&assembly, assembly_file, &symbol_table)?;
 
-    if compile_options.assemble {
-        println!("Assembly written to: {}", assembly_path.to_str().unwrap());
-    }
+    // if compile_options.assemble {
+    //     println!("Assembly written to: {}", assembly_path.to_str().unwrap());
+    // }
 
-    Ok(Some(assembly_path))
+    // Ok(Some(assembly_path))
 
-    // Ok(None)
+    Ok(None)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

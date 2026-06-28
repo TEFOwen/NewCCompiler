@@ -9,9 +9,9 @@ trait IsLvalue {
     fn is_lvalue(&self) -> bool;
 }
 
-impl IsLvalue for parser::Expression {
+impl IsLvalue for parser::TypedExpression {
     fn is_lvalue(&self) -> bool {
-        match self {
+        match &self.expression {
             parser::Expression::Factor(factor) => factor.is_lvalue(),
             parser::Expression::BinaryOp { .. } => false,
             parser::Expression::Assignment { .. } => false,
@@ -23,8 +23,8 @@ impl IsLvalue for parser::Expression {
 impl IsLvalue for parser::Factor {
     fn is_lvalue(&self) -> bool {
         match self {
-            parser::Factor::UnaryOp { .. } => false,
             parser::Factor::Postfix(postfix) => postfix.is_lvalue(),
+            parser::Factor::UnaryOp { .. } | parser::Factor::Cast { .. } => false,
         }
     }
 }
@@ -73,6 +73,7 @@ impl ResolveLvalues for parser::FuncDeclaration {
                 parameters: self.parameters,
                 body,
                 storage_class: self.storage_class,
+                ty: self.ty,
             })
     }
 }
@@ -219,6 +220,17 @@ impl ResolveLvalues for parser::ForInit {
     }
 }
 
+impl ResolveLvalues for parser::TypedExpression {
+    fn resolve_lvalues(self) -> Result<Self, SemanticError> {
+        self.expression
+            .resolve_lvalues()
+            .map(|expression| parser::TypedExpression {
+                ty: self.ty,
+                expression,
+            })
+    }
+}
+
 impl ResolveLvalues for parser::Expression {
     fn resolve_lvalues(self) -> Result<Self, SemanticError> {
         match self {
@@ -235,7 +247,7 @@ impl ResolveLvalues for parser::Expression {
                         right: Box::new(right.resolve_lvalues()?),
                     })
                 } else {
-                    Err(SemanticError::InvalidLvalue(*left))
+                    Err(SemanticError::InvalidLvalue(left.expression))
                 }
             }
             Self::Conditional {
@@ -254,31 +266,35 @@ impl ResolveLvalues for parser::Expression {
 impl ResolveLvalues for parser::Factor {
     fn resolve_lvalues(self) -> Result<Self, SemanticError> {
         match self {
-            Self::UnaryOp { op, fac } => {
+            parser::Factor::UnaryOp { op, fac } => {
                 if matches!(
                     op,
                     parser::UnaryOperator::PrefixIncrement | parser::UnaryOperator::PrefixDecrement
                 ) && !fac.is_lvalue()
                 {
                     return Err(SemanticError::InvalidLvalue(parser::Expression::Factor(
-                        Self::UnaryOp { op, fac },
+                        parser::Factor::UnaryOp { op, fac },
                     )));
                 }
-                Ok(Self::UnaryOp {
+                Ok(parser::Factor::UnaryOp {
                     op,
                     fac: Box::new(fac.resolve_lvalues()?),
                 })
             }
-            Self::Postfix(postfix) => {
+            parser::Factor::Postfix(postfix) => {
                 if postfix.postfix.len() > 1
                     || (postfix.postfix.len() > 0 && !postfix.primary.is_lvalue())
                 {
                     return Err(SemanticError::InvalidLvalue(parser::Expression::Factor(
-                        Self::Postfix(postfix),
+                        parser::Factor::Postfix(postfix),
                     )));
                 }
-                Ok(Self::Postfix(postfix.resolve_lvalues()?))
+                Ok(parser::Factor::Postfix(postfix.resolve_lvalues()?))
             }
+            parser::Factor::Cast { ty, fac } => Ok(parser::Factor::Cast {
+                ty,
+                fac: Box::new(fac.resolve_lvalues()?),
+            }),
         }
     }
 }

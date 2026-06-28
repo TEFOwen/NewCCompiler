@@ -1,4 +1,7 @@
-use crate::lexer::{Keyword, Symbol, Token, TokenType};
+use crate::{
+    lexer::{Keyword, Symbol, Token, TokenType},
+    types::{self, IsType},
+};
 use itertools::{Itertools, MultiPeek};
 use thiserror::Error;
 
@@ -16,6 +19,8 @@ pub enum ParserError {
     InvalidStorageClass,
     #[error("Function declaration in for loop initializer is not allowed")]
     FunctionDeclarationInForInit,
+    #[error("Type error: {0}")]
+    TypeError(#[from] types::TypeError),
 }
 
 #[derive(Debug, Clone)]
@@ -32,13 +37,15 @@ pub struct FuncDeclaration {
     pub identifier: String,
     pub parameters: ParamList,
     pub body: Option<Block>,
+    pub ty: types::Type,
     pub storage_class: Option<StorageClass>,
 }
 
 #[derive(Debug, Clone)]
 pub struct VariableDeclaration {
     pub identifier: String,
-    pub initialiser: Option<Expression>,
+    pub initialiser: Option<TypedExpression>,
+    pub ty: types::Type,
     pub storage_class: Option<StorageClass>,
 }
 
@@ -62,41 +69,41 @@ pub enum BlockItem {
 
 #[derive(Debug, Clone)]
 pub enum Statement {
-    Return(Expression),
+    Return(TypedExpression),
     Labeled(String, Box<Statement>),
     Goto(String),
-    Expression(Expression),
+    Expression(TypedExpression),
     If {
-        condition: Expression,
+        condition: TypedExpression,
         then_branch: Box<Statement>,
         else_branch: Option<Box<Statement>>,
     },
     Break(Option<String>),
     Continue(Option<String>),
-    Case(Expression, Box<Statement>, Option<String>),
+    Case(TypedExpression, Box<Statement>, Option<String>),
     Default(Box<Statement>, Option<String>),
     While {
-        condition: Expression,
+        condition: TypedExpression,
         body: Box<Statement>,
         label: Option<String>,
     },
     DoWhile {
         body: Box<Statement>,
-        condition: Expression,
+        condition: TypedExpression,
         label: Option<String>,
     },
     For {
         init: ForInit,
-        condition: Option<Expression>,
-        post: Option<Expression>,
+        condition: Option<TypedExpression>,
+        post: Option<TypedExpression>,
         body: Box<Statement>,
         label: Option<String>,
     },
     Switch {
-        condition: Expression,
+        condition: TypedExpression,
         body: Box<Statement>,
         label: Option<String>,
-        cases: Vec<u32>,
+        cases: Vec<types::Constant>,
         default_exists: bool,
     },
     Block(Block),
@@ -106,7 +113,28 @@ pub enum Statement {
 #[derive(Debug, Clone)]
 pub enum ForInit {
     Declaration(VariableDeclaration),
-    Expression(Option<Expression>),
+    Expression(Option<TypedExpression>),
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedExpression {
+    pub expression: Expression,
+    pub ty: Option<types::Type>,
+}
+
+impl From<Expression> for TypedExpression {
+    fn from(expression: Expression) -> Self {
+        TypedExpression {
+            expression,
+            ty: None,
+        }
+    }
+}
+
+impl ToAst for TypedExpression {
+    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
+        return Expression::to_ast(tokens).map(|exp| exp.into());
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -114,17 +142,17 @@ pub enum Expression {
     Factor(Factor),
     BinaryOp {
         op: BinaryOperator,
-        left: Box<Expression>,
-        right: Box<Expression>,
+        left: Box<TypedExpression>,
+        right: Box<TypedExpression>,
     },
     Assignment {
-        left: Box<Expression>,
-        right: Box<Expression>,
+        left: Box<TypedExpression>,
+        right: Box<TypedExpression>,
     },
     Conditional {
-        condition: Box<Expression>,
-        then_branch: Box<Expression>,
-        else_branch: Box<Expression>,
+        condition: Box<TypedExpression>,
+        then_branch: Box<TypedExpression>,
+        else_branch: Box<TypedExpression>,
     },
 }
 
@@ -161,6 +189,16 @@ pub enum Associativity {
 pub enum Factor {
     UnaryOp { op: UnaryOperator, fac: Box<Factor> },
     Postfix(Postfix),
+    Cast { ty: types::Type, fac: Box<Factor> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOperator {
+    Complement,
+    Negate,
+    LogicalNot,
+    PrefixIncrement,
+    PrefixDecrement,
 }
 
 #[derive(Debug, Clone)]
@@ -177,23 +215,14 @@ pub enum PostfixOp {
 
 #[derive(Debug, Clone)]
 pub enum Primary {
-    Constant(u32),
+    Constant(types::Constant),
     Var(String),
-    Paren(Box<Expression>),
+    Paren(Box<TypedExpression>),
     FunctionCall(String, ArgumentList),
 }
 
 #[derive(Debug, Clone)]
-pub struct ArgumentList(pub Vec<Expression>);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnaryOperator {
-    Complement,
-    Negate,
-    LogicalNot,
-    PrefixIncrement,
-    PrefixDecrement,
-}
+pub struct ArgumentList(pub Vec<TypedExpression>);
 
 trait ToAst
 where
@@ -208,9 +237,9 @@ pub fn parse(tokens: Vec<Token>) -> Result<Program, ParserError> {
 }
 
 macro_rules! expect_token {
-    ($tokens:expr, $expected:pat, $expected_str:literal) => {
+    ($tokens:expr, $expected:pat $(if $guard:expr)?, $expected_str:literal) => {
         match $tokens.next() {
-            Some(token) if matches!(token.0, $expected) => token,
+            Some(token) if matches!(token.0, $expected $(if $guard)?) => token,
             Some(token) => {
                 return Err(ParserError::UnexpectedToken {
                     expected: $expected_str.into(),
@@ -239,30 +268,47 @@ impl ToAst for Program {
 
 fn parse_types_and_storage_class(
     tokens: impl IntoIterator<Item = Token>,
-) -> Result<Option<StorageClass>, ParserError> {
+) -> Result<(types::Type, Option<StorageClass>), ParserError> {
     let mut types = Vec::new();
     let mut storage_classes = Vec::new();
 
     for token in tokens {
         match token.0 {
-            TokenType::Keyword(Keyword::Int) => types.push(token.0),
-            TokenType::Keyword(Keyword::Static | Keyword::Extern) => storage_classes.push(token.0),
+            TokenType::Keyword(kwd) if kwd.is_type() => types.push(token),
+            TokenType::Keyword(kwd) if kwd.is_storage_class_specifier() => {
+                storage_classes.push(token.0)
+            }
             _ => return Err(ParserError::InvalidTypeOrStorageClass(token)),
         }
     }
 
-    if types.len() != 1 {
-        return Err(ParserError::InvalidType);
-    }
+    let ty = types::Type::from_tokens(&types)?;
+
     if storage_classes.len() > 1 {
         return Err(ParserError::InvalidStorageClass);
     }
 
-    match storage_classes.first() {
-        Some(TokenType::Keyword(Keyword::Static)) => Ok(Some(StorageClass::Static)),
-        Some(TokenType::Keyword(Keyword::Extern)) => Ok(Some(StorageClass::Extern)),
-        None => Ok(None),
-        _ => unreachable!(),
+    Ok((
+        ty,
+        match storage_classes.first() {
+            Some(TokenType::Keyword(Keyword::Static)) => Some(StorageClass::Static),
+            Some(TokenType::Keyword(Keyword::Extern)) => Some(StorageClass::Extern),
+            None => None,
+            _ => unreachable!(),
+        },
+    ))
+}
+
+trait IsStorageClassSpecifier {
+    fn is_storage_class_specifier(&self) -> bool;
+}
+
+impl IsStorageClassSpecifier for Keyword {
+    fn is_storage_class_specifier(&self) -> bool {
+        match self {
+            Keyword::Static | Keyword::Extern => true,
+            _ => false,
+        }
     }
 }
 
@@ -272,11 +318,52 @@ trait IsSpecifier {
 
 impl IsSpecifier for Keyword {
     fn is_specifier(&self) -> bool {
-        match self {
-            Keyword::Int | Keyword::Static | Keyword::Extern => true,
-            _ => false,
+        self.is_type() || self.is_storage_class_specifier()
+    }
+}
+
+fn parse_params(
+    tokens: &mut MultiPeek<impl Iterator<Item = Token>>,
+) -> Result<Vec<(types::Type, String)>, ParserError> {
+    match tokens.peek() {
+        Some(Token(TokenType::Keyword(Keyword::Void), _)) => {
+            tokens.next();
+            return Ok(Vec::new());
+        }
+        Some(Token(TokenType::Keyword(kwd), _)) if kwd.is_type() => {}
+        None => return Err(ParserError::EndOfTokenStream),
+        _ => {
+            return Err(ParserError::UnexpectedToken {
+                expected: "type specifier".into(),
+                found: tokens.next().unwrap(),
+            });
         }
     }
+
+    let mut params = Vec::new();
+    loop {
+        tokens.reset_peek();
+        let types = tokens.peeking_take_while(
+            |token| matches!(token.0, TokenType::Keyword(kwd) if kwd.is_type()),
+        );
+        let ty = types::Type::from_tokens(&types.collect_vec())?;
+
+        let Token(TokenType::Identifier(identifier), _) =
+            expect_token!(tokens, TokenType::Identifier(_), "parameter name")
+        else {
+            unreachable!()
+        };
+        params.push((ty, identifier));
+        if !matches!(
+            tokens.peek(),
+            Some(Token(TokenType::Symbol(Symbol::Comma), _))
+        ) {
+            break;
+        }
+        tokens.next(); // Consume the ',' token
+    }
+
+    Ok(params)
 }
 
 impl ToAst for Declaration {
@@ -284,18 +371,21 @@ impl ToAst for Declaration {
         let types_and_storage_class_tokens = tokens.peeking_take_while(
             |token| matches!(token.0, TokenType::Keyword(kwd) if kwd.is_specifier()),
         );
-        let storage_class = parse_types_and_storage_class(types_and_storage_class_tokens)?;
+        let (ty, storage_class) = parse_types_and_storage_class(types_and_storage_class_tokens)?;
         let Token(TokenType::Identifier(identifier), _) =
             expect_token!(tokens, TokenType::Identifier(_), "identifier")
         else {
             unreachable!()
         };
+
         if matches!(
             tokens.peek(),
             Some(Token(TokenType::Symbol(Symbol::OpenParen), _))
         ) {
             tokens.next(); // Consume the '(' token
-            let parameters = ParamList::to_ast(tokens)?;
+            let parameters = parse_params(tokens)?;
+            let (param_types, identifiers): (Vec<types::Type>, Vec<String>) =
+                parameters.into_iter().unzip();
 
             expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
 
@@ -312,9 +402,13 @@ impl ToAst for Declaration {
 
             Ok(Declaration::Function(FuncDeclaration {
                 identifier,
-                parameters,
+                parameters: ParamList(identifiers),
                 body,
                 storage_class,
+                ty: types::Type::Function {
+                    params: param_types,
+                    return_type: Box::new(ty),
+                },
             }))
         } else {
             match expect_token!(
@@ -323,12 +417,13 @@ impl ToAst for Declaration {
                 "'=' or ';'"
             ) {
                 Token(TokenType::Symbol(Symbol::Equal), _) => {
-                    let initialiser = Some(Expression::to_ast(tokens)?);
+                    let initialiser = Some(TypedExpression::to_ast(tokens)?);
                     expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
                     Ok(Declaration::Variable(VariableDeclaration {
                         identifier,
                         initialiser,
                         storage_class,
+                        ty,
                     }))
                 }
                 Token(TokenType::Symbol(Symbol::Semicolon), _) => {
@@ -336,49 +431,11 @@ impl ToAst for Declaration {
                         identifier,
                         initialiser: None,
                         storage_class,
+                        ty,
                     }))
                 }
                 _ => unreachable!(),
             }
-        }
-    }
-}
-
-impl ToAst for ParamList {
-    fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
-        let Token(TokenType::Keyword(keyword), _) = expect_token!(
-            tokens,
-            TokenType::Keyword(Keyword::Void | Keyword::Int),
-            "type specifier"
-        ) else {
-            unreachable!()
-        };
-        let mut params = Vec::new();
-        if keyword == Keyword::Void {
-            Ok(ParamList(params))
-        } else {
-            loop {
-                let Token(TokenType::Identifier(identifier), _) =
-                    expect_token!(tokens, TokenType::Identifier(_), "parameter name")
-                else {
-                    unreachable!()
-                };
-                params.push(identifier);
-                if matches!(
-                    tokens.peek(),
-                    Some(Token(TokenType::Symbol(Symbol::Comma), _))
-                ) {
-                    tokens.next();
-                    expect_token!(
-                        tokens,
-                        TokenType::Keyword(Keyword::Int),
-                        "type specifier for parameter"
-                    );
-                } else {
-                    break;
-                }
-            }
-            Ok(ParamList(params))
         }
     }
 }
@@ -422,7 +479,7 @@ impl ToAst for Statement {
         match tokens.peek() {
             Some(Token(TokenType::Keyword(Keyword::Return), _)) => {
                 tokens.next(); // Consume the 'return' token
-                let expr = Expression::to_ast(tokens)?;
+                let expr = TypedExpression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
                 Ok(Statement::Return(expr))
             }
@@ -449,14 +506,14 @@ impl ToAst for Statement {
                     Ok(Statement::Labeled(identifier.clone(), Box::new(stmt)))
                 } else {
                     tokens.reset_peek();
-                    let expr = Expression::to_ast(tokens)?;
+                    let expr = TypedExpression::to_ast(tokens)?;
                     expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
                     Ok(Statement::Expression(expr))
                 }
             }
             Some(Token(TokenType::Keyword(Keyword::Case), _)) => {
                 tokens.next(); // Consume the 'case' token
-                let value = Expression::to_ast(tokens)?;
+                let value = TypedExpression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::Colon), "':'");
                 let stmt = Statement::to_ast(tokens)?;
                 Ok(Statement::Case(value, Box::new(stmt), None))
@@ -480,7 +537,7 @@ impl ToAst for Statement {
             Some(Token(TokenType::Keyword(Keyword::If), _)) => {
                 tokens.next(); // Consume the 'if' token
                 expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
-                let condition = Expression::to_ast(tokens)?;
+                let condition = TypedExpression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
                 let then_branch = Box::new(Statement::to_ast(tokens)?);
                 let else_branch = if matches!(
@@ -504,7 +561,7 @@ impl ToAst for Statement {
             Some(Token(TokenType::Keyword(Keyword::While), _)) => {
                 tokens.next(); // Consume the 'while' token
                 expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
-                let condition = Expression::to_ast(tokens)?;
+                let condition = TypedExpression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
                 let body = Box::new(Statement::to_ast(tokens)?);
                 Ok(Statement::While {
@@ -518,7 +575,7 @@ impl ToAst for Statement {
                 let body = Box::new(Statement::to_ast(tokens)?);
                 expect_token!(tokens, TokenType::Keyword(Keyword::While), "while");
                 expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
-                let condition = Expression::to_ast(tokens)?;
+                let condition = TypedExpression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
                 expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
                 Ok(Statement::DoWhile {
@@ -544,7 +601,7 @@ impl ToAst for Statement {
                     }
                     _ => {
                         tokens.reset_peek();
-                        let exp = ForInit::Expression(Some(Expression::to_ast(tokens)?));
+                        let exp = ForInit::Expression(Some(TypedExpression::to_ast(tokens)?));
                         expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
                         exp
                     }
@@ -554,7 +611,7 @@ impl ToAst for Statement {
                     Some(Token(TokenType::Symbol(Symbol::Semicolon), _))
                 ) {
                     tokens.reset_peek();
-                    Some(Expression::to_ast(tokens)?)
+                    Some(TypedExpression::to_ast(tokens)?)
                 } else {
                     None
                 };
@@ -564,7 +621,7 @@ impl ToAst for Statement {
                     Some(Token(TokenType::Symbol(Symbol::CloseParen), _))
                 ) {
                     tokens.reset_peek();
-                    Some(Expression::to_ast(tokens)?)
+                    Some(TypedExpression::to_ast(tokens)?)
                 } else {
                     None
                 };
@@ -581,7 +638,7 @@ impl ToAst for Statement {
             Some(Token(TokenType::Keyword(Keyword::Switch), _)) => {
                 tokens.next(); // Consume the 'switch' token
                 expect_token!(tokens, TokenType::Symbol(Symbol::OpenParen), "'('");
-                let condition = Expression::to_ast(tokens)?;
+                let condition = TypedExpression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
                 let body = Box::new(Statement::to_ast(tokens)?);
                 Ok(Statement::Switch {
@@ -602,7 +659,7 @@ impl ToAst for Statement {
             }
             Some(_) => {
                 tokens.reset_peek();
-                let expr = Expression::to_ast(tokens)?;
+                let expr = TypedExpression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::Semicolon), "';'");
                 Ok(Statement::Expression(expr))
             }
@@ -631,15 +688,15 @@ impl Expression {
                     expect_token!(tokens, TokenType::Symbol(Symbol::Colon), "':'");
                     let right = Self::parse_min_prec(tokens, Self::get_precedence(op).unwrap())?;
                     left = Expression::Conditional {
-                        condition: Box::new(left),
-                        then_branch: Box::new(middle),
-                        else_branch: Box::new(right),
+                        condition: Box::new(left.into()),
+                        then_branch: Box::new(middle.into()),
+                        else_branch: Box::new(right.into()),
                     };
                 } else {
                     let right = Self::parse_min_prec(tokens, Self::get_precedence(op).unwrap())?;
                     left = Expression::Assignment {
-                        left: Box::new(left.clone()),
-                        right: Box::new(Self::op_to_assignment(op, left, right)),
+                        left: Box::new(left.clone().into()),
+                        right: Box::new(Self::op_to_assignment(op, left, right).into()),
                     };
                 }
             } else {
@@ -666,8 +723,8 @@ impl Expression {
                         Symbol::GreaterEqual => BinaryOperator::GreaterEqual,
                         _ => unreachable!(),
                     },
-                    left: Box::new(left),
-                    right: Box::new(right),
+                    left: Box::new(left.into()),
+                    right: Box::new(right.into()),
                 };
             }
         }
@@ -730,53 +787,53 @@ impl Expression {
             Symbol::Equal => right,
             Symbol::PlusEqual => Expression::BinaryOp {
                 op: BinaryOperator::Add,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(left.into()),
+                right: Box::new(right.into()),
             },
             Symbol::MinusEqual => Expression::BinaryOp {
                 op: BinaryOperator::Subtract,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(left.into()),
+                right: Box::new(right.into()),
             },
             Symbol::AsteriskEqual => Expression::BinaryOp {
                 op: BinaryOperator::Multiply,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(left.into()),
+                right: Box::new(right.into()),
             },
             Symbol::SlashEqual => Expression::BinaryOp {
                 op: BinaryOperator::Divide,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(left.into()),
+                right: Box::new(right.into()),
             },
             Symbol::PercentEqual => Expression::BinaryOp {
                 op: BinaryOperator::Remainder,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(left.into()),
+                right: Box::new(right.into()),
             },
             Symbol::DoubleLtEqual => Expression::BinaryOp {
                 op: BinaryOperator::LeftShift,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(left.into()),
+                right: Box::new(right.into()),
             },
             Symbol::DoubleGtEqual => Expression::BinaryOp {
                 op: BinaryOperator::RightShift,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(left.into()),
+                right: Box::new(right.into()),
             },
             Symbol::AmpersandEqual => Expression::BinaryOp {
                 op: BinaryOperator::BitwiseAnd,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(left.into()),
+                right: Box::new(right.into()),
             },
             Symbol::BarEqual => Expression::BinaryOp {
                 op: BinaryOperator::BitwiseOr,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(left.into()),
+                right: Box::new(right.into()),
             },
             Symbol::HatEqual => Expression::BinaryOp {
                 op: BinaryOperator::BitwiseXor,
-                left: Box::new(left),
-                right: Box::new(right),
+                left: Box::new(left.into()),
+                right: Box::new(right.into()),
             },
             _ => unreachable!(),
         }
@@ -791,38 +848,57 @@ impl ToAst for Expression {
 
 impl ToAst for Factor {
     fn to_ast(tokens: &mut MultiPeek<impl Iterator<Item = Token>>) -> Result<Self, ParserError> {
-        if matches!(
-            tokens.peek(),
+        match tokens.peek() {
             Some(Token(
                 TokenType::Symbol(
                     Symbol::Tilde
-                        | Symbol::Hyphen
-                        | Symbol::Exclamation
-                        | Symbol::DoublePlus
-                        | Symbol::DoubleHyphen
+                    | Symbol::Hyphen
+                    | Symbol::Exclamation
+                    | Symbol::DoublePlus
+                    | Symbol::DoubleHyphen,
                 ),
-                _
-            ))
-        ) {
-            let Some(Token(TokenType::Symbol(s), _)) = tokens.next() else {
-                unreachable!()
-            };
+                _,
+            )) => {
+                let Some(Token(TokenType::Symbol(s), _)) = tokens.next() else {
+                    unreachable!()
+                };
 
-            let inner = Factor::to_ast(tokens)?;
-            Ok(Factor::UnaryOp {
-                op: match s {
-                    Symbol::Tilde => UnaryOperator::Complement,
-                    Symbol::Hyphen => UnaryOperator::Negate,
-                    Symbol::Exclamation => UnaryOperator::LogicalNot,
-                    Symbol::DoublePlus => UnaryOperator::PrefixIncrement,
-                    Symbol::DoubleHyphen => UnaryOperator::PrefixDecrement,
-                    _ => unreachable!(),
-                },
-                fac: Box::new(inner),
-            })
-        } else {
-            tokens.reset_peek();
-            Postfix::to_ast(tokens).map(Factor::Postfix)
+                let inner = Factor::to_ast(tokens)?;
+                Ok(Factor::UnaryOp {
+                    op: match s {
+                        Symbol::Tilde => UnaryOperator::Complement,
+                        Symbol::Hyphen => UnaryOperator::Negate,
+                        Symbol::Exclamation => UnaryOperator::LogicalNot,
+                        Symbol::DoublePlus => UnaryOperator::PrefixIncrement,
+                        Symbol::DoubleHyphen => UnaryOperator::PrefixDecrement,
+                        _ => unreachable!(),
+                    },
+                    fac: Box::new(inner),
+                })
+            }
+            Some(Token(TokenType::Symbol(Symbol::OpenParen), _)) => {
+                if !matches!(tokens.peek(), Some(Token(TokenType::Keyword(kwd), _)) if kwd.is_type())
+                {
+                    tokens.reset_peek();
+                    Postfix::to_ast(tokens).map(Factor::Postfix)
+                } else {
+                    tokens.next(); // Consume the '(' token
+                    let ty_tokens = tokens.peeking_take_while(
+                        |token| matches!(token.0, TokenType::Keyword(kwd) if kwd.is_type()),
+                    );
+                    let ty = types::Type::from_tokens(&ty_tokens.collect_vec())?;
+                    expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
+                    let inner = Factor::to_ast(tokens)?;
+                    Ok(Factor::Cast {
+                        ty,
+                        fac: Box::new(inner),
+                    })
+                }
+            }
+            _ => {
+                tokens.reset_peek();
+                Postfix::to_ast(tokens).map(Factor::Postfix)
+            }
         }
     }
 }
@@ -888,7 +964,7 @@ impl ToAst for Primary {
                 }
             }
             TokenType::Symbol(Symbol::OpenParen) => {
-                let expr = Expression::to_ast(tokens)?;
+                let expr = TypedExpression::to_ast(tokens)?;
                 expect_token!(tokens, TokenType::Symbol(Symbol::CloseParen), "')'");
                 Ok(Primary::Paren(Box::new(expr)))
             }
@@ -902,7 +978,7 @@ impl ToAst for ArgumentList {
         let mut args = Vec::new();
         loop {
             tokens.reset_peek();
-            args.push(Expression::to_ast(tokens)?);
+            args.push(TypedExpression::to_ast(tokens)?);
             if matches!(
                 tokens.peek(),
                 Some(Token(TokenType::Symbol(Symbol::Comma), _))

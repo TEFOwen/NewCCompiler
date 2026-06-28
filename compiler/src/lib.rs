@@ -4,6 +4,7 @@ pub mod lexer;
 pub mod parser;
 pub mod semantic_analysis;
 pub mod tacky;
+mod types;
 
 mod resolve_identifiers;
 mod resolve_labels;

@@ -1,770 +1,770 @@
-use std::{
-    fmt::Display,
-    sync::atomic::{AtomicUsize, Ordering},
-};
-
-use crate::{
-    parser,
-    resolve_types::{IdentifierAttribute, InitialValue, SymbolTable},
-    semantic_analysis::get_expression_constant,
-};
-
-static UNARY_OP_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
-static BINARY_OP_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
-static JUMP_LABEL_COUNTER: AtomicUsize = AtomicUsize::new(0);
-static ARGUMENT_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
-static FUNC_RESULT_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn next_unary_op_var() -> Value {
-    Value::Var(format!(
-        "unary_op.{}",
-        UNARY_OP_VAR_COUNTER.fetch_add(1, Ordering::SeqCst)
-    ))
-}
-
-fn next_binary_op_var() -> Value {
-    Value::Var(format!(
-        "binary_op.{}",
-        BINARY_OP_VAR_COUNTER.fetch_add(1, Ordering::SeqCst)
-    ))
-}
-
-fn next_jump_label(name: impl Display) -> String {
-    format!(
-        "label_{}.{}",
-        name,
-        JUMP_LABEL_COUNTER.fetch_add(1, Ordering::SeqCst)
-    )
-}
-
-fn next_argument_var() -> Value {
-    Value::Var(format!(
-        "arg.{}",
-        ARGUMENT_VAR_COUNTER.fetch_add(1, Ordering::SeqCst)
-    ))
-}
-
-fn next_func_result_var(func_name: impl Display) -> Value {
-    Value::Var(format!(
-        "result.{}.{}",
-        func_name,
-        FUNC_RESULT_VAR_COUNTER.fetch_add(1, Ordering::SeqCst)
-    ))
-}
-
-#[derive(Debug)]
-pub struct Program(pub Vec<TopLevel>);
-
-#[derive(Debug)]
-pub enum TopLevel {
-    FunctionDefinition {
-        identifier: String,
-        params: Vec<String>,
-        body: Vec<Instruction>,
-        global: bool,
-    },
-    StaticVariable {
-        identifier: String,
-        init: i32,
-        global: bool,
-    },
-}
-
-#[derive(Debug)]
-pub enum Instruction {
-    Return(Value),
-    UnaryOp {
-        op: parser::UnaryOperator,
-        src: Value,
-        dst: Value,
-    },
-    BinaryOp {
-        op: BinaryOperator,
-        val1: Value,
-        val2: Value,
-        dst: Value,
-    },
-    Copy {
-        src: Value,
-        dst: Value,
-    },
-    Jump(String),
-    JumpIfZero {
-        val: Value,
-        target: String,
-    },
-    JumpIfNotZero {
-        val: Value,
-        target: String,
-    },
-    Label(String),
-    FunCall {
-        name: String,
-        args: Vec<Value>,
-        dst: Value,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryOperator {
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Remainder,
-    BitwiseAnd,
-    BitwiseOr,
-    BitwiseXor,
-    LeftShift,
-    RightShift,
-
-    Equal,
-    NotEqual,
-    LessThan,
-    GreaterThan,
-    LessEqual,
-    GreaterEqual,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Value {
-    Constant(u32),
-    Var(String),
-}
-
-pub trait ToTacky {
-    type Output;
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output;
-}
-
-impl ToTacky for parser::Program {
-    type Output = Program;
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        let function_top_level = self
-            .0
-            .into_iter()
-            .filter_map(|declaration| match declaration {
-                parser::Declaration::Function(func_def) => func_def.to_tacky(symbol_table),
-                parser::Declaration::Variable(_) => None,
-            });
-
-        let static_variables =
-            symbol_table
-                .symbols
-                .iter()
-                .filter_map(|(identifier, (_ty, attr))| match attr {
-                    IdentifierAttribute::Static { init, global } => match init {
-                        InitialValue::Initial(i) => Some(TopLevel::StaticVariable {
-                            identifier: identifier.clone(),
-                            init: *i,
-                            global: *global,
-                        }),
-                        InitialValue::Tentative => Some(TopLevel::StaticVariable {
-                            identifier: identifier.clone(),
-                            init: 0,
-                            global: *global,
-                        }),
-                        InitialValue::NoInitialiser => None,
-                    },
-                    _ => None,
-                });
-
-        Program(function_top_level.chain(static_variables).collect())
-    }
-}
-
-impl ToTacky for parser::FuncDeclaration {
-    type Output = Option<TopLevel>;
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        self.body.map(|body| TopLevel::FunctionDefinition {
-            identifier: self.identifier.clone(),
-            params: self.parameters.to_tacky(symbol_table),
-            body: body
-                .to_tacky(symbol_table)
-                .into_iter()
-                .chain(std::iter::once(Instruction::Return(Value::Constant(0))))
-                .collect(),
-            global: symbol_table.is_global_function(self.identifier),
-        })
-    }
-}
-
-impl ToTacky for parser::ParamList {
-    type Output = Vec<String>;
-
-    fn to_tacky(self, _symbol_table: &SymbolTable) -> Self::Output {
-        self.0
-    }
-}
-
-impl ToTacky for parser::Block {
-    type Output = Vec<Instruction>;
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        self.0
-            .into_iter()
-            .flat_map(|item| item.to_tacky(symbol_table))
-            .collect()
-    }
-}
-
-impl ToTacky for parser::BlockItem {
-    type Output = Vec<Instruction>;
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        match self {
-            parser::BlockItem::Statement(statement) => statement.to_tacky(symbol_table),
-            parser::BlockItem::Declaration(declaration) => declaration.to_tacky(symbol_table),
-        }
-    }
-}
-
-impl ToTacky for parser::Statement {
-    type Output = Vec<Instruction>;
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        match self {
-            parser::Statement::Return(exp) => {
-                let (mut instructions, var) = exp.to_tacky(symbol_table);
-                instructions.push(Instruction::Return(var));
-                instructions
-            }
-            parser::Statement::Expression(expression) => expression.to_tacky(symbol_table).0,
-            parser::Statement::Null => vec![],
-            parser::Statement::If {
-                condition,
-                then_branch,
-                else_branch,
-            } => {
-                let else_label = next_jump_label("if_else");
-                let end_label = next_jump_label("if_end");
-                let (mut instructions, cond) = condition.to_tacky(symbol_table);
-                instructions.push(Instruction::JumpIfZero {
-                    val: cond,
-                    target: else_label.clone(),
-                });
-                instructions.extend(then_branch.to_tacky(symbol_table));
-                instructions.push(Instruction::Jump(end_label.clone()));
-                instructions.push(Instruction::Label(else_label));
-                if let Some(else_branch) = else_branch {
-                    instructions.extend(else_branch.to_tacky(symbol_table));
-                }
-                instructions.push(Instruction::Label(end_label));
-
-                instructions
-            }
-            parser::Statement::Block(block) => block.to_tacky(symbol_table),
-            parser::Statement::Labeled(label, statement) => {
-                let mut instructions = vec![Instruction::Label(label)];
-                instructions.extend(statement.to_tacky(symbol_table));
-                instructions
-            }
-            parser::Statement::Goto(label) => {
-                vec![Instruction::Jump(label)]
-            }
-            parser::Statement::Break(label) => {
-                vec![Instruction::Jump(format!(
-                    "{}.break",
-                    label.expect("Loops have not been resolved")
-                ))]
-            }
-            parser::Statement::Continue(label) => {
-                vec![Instruction::Jump(format!(
-                    "{}.continue",
-                    label.expect("Loops have not been resolved")
-                ))]
-            }
-            parser::Statement::While {
-                condition,
-                body,
-                label,
-            } => {
-                let label = label.clone().expect("Loops have not been resolved");
-                let continue_label = format!("{}.continue", label);
-                let break_label = format!("{}.break", label);
-
-                let mut instructions = vec![Instruction::Label(continue_label.clone())];
-                let (cond_instructions, cond) = condition.to_tacky(symbol_table);
-                instructions.extend(cond_instructions);
-                instructions.push(Instruction::JumpIfZero {
-                    val: cond,
-                    target: break_label.clone(),
-                });
-                instructions.extend(body.to_tacky(symbol_table));
-                instructions.push(Instruction::Jump(continue_label));
-                instructions.push(Instruction::Label(break_label));
-                instructions
-            }
-            parser::Statement::DoWhile {
-                body,
-                condition,
-                label,
-            } => {
-                let label = label.clone().expect("Loops have not been resolved");
-                let start_label = format!("{}.start", label);
-                let continue_label = format!("{}.continue", label);
-                let break_label = format!("{}.break", label);
-
-                let mut instructions = vec![Instruction::Label(start_label.clone())];
-                instructions.extend(body.to_tacky(symbol_table));
-                instructions.push(Instruction::Label(continue_label));
-                let (cond_instructions, cond) = condition.to_tacky(symbol_table);
-                instructions.extend(cond_instructions);
-                instructions.push(Instruction::JumpIfNotZero {
-                    val: cond,
-                    target: start_label,
-                });
-                instructions.push(Instruction::Label(break_label));
-                instructions
-            }
-            parser::Statement::For {
-                init,
-                condition,
-                post,
-                body,
-                label,
-            } => {
-                let label = label.clone().expect("Loops have not been resolved");
-                let start_label = format!("{}.start", label);
-                let continue_label = format!("{}.continue", label);
-                let break_label = format!("{}.break", label);
-
-                let mut instructions = init.to_tacky(symbol_table);
-                instructions.push(Instruction::Label(start_label.clone()));
-                if let Some(condition) = condition {
-                    let (cond_instructions, cond) = condition.to_tacky(symbol_table);
-                    instructions.extend(cond_instructions);
-                    instructions.push(Instruction::JumpIfZero {
-                        val: cond,
-                        target: break_label.clone(),
-                    });
-                }
-                instructions.extend(body.to_tacky(symbol_table));
-                instructions.push(Instruction::Label(continue_label.clone()));
-                if let Some(post) = post {
-                    instructions.extend(post.to_tacky(symbol_table).0);
-                }
-                instructions.push(Instruction::Jump(start_label));
-                instructions.push(Instruction::Label(break_label));
-                instructions
-            }
-            parser::Statement::Case(expression, statement, target) => {
-                let label = format!(
-                    "{}.case.{}",
-                    target.unwrap(),
-                    get_expression_constant(&expression).unwrap()
-                );
-                let mut instructions = vec![Instruction::Label(label)];
-                instructions.extend(statement.to_tacky(symbol_table));
-                instructions
-            }
-            parser::Statement::Default(statement, target) => {
-                let label = format!("{}.default", target.unwrap());
-                let mut instructions = vec![Instruction::Label(label)];
-                instructions.extend(statement.to_tacky(symbol_table));
-                instructions
-            }
-            parser::Statement::Switch {
-                condition,
-                body,
-                label,
-                cases,
-                default_exists,
-            } => {
-                let label = label.clone().expect("Loops have not been resolved");
-
-                let break_label = format!("{}.break", label);
-                let (mut instructions, cond) = condition.to_tacky(symbol_table);
-                for case in cases {
-                    let case_label = format!("{}.case.{}", label, case);
-                    let dst = next_binary_op_var();
-                    instructions.push(Instruction::BinaryOp {
-                        op: BinaryOperator::Equal,
-                        val1: cond.clone(),
-                        val2: Value::Constant(case),
-                        dst: dst.clone(),
-                    });
-                    instructions.push(Instruction::JumpIfNotZero {
-                        val: dst,
-                        target: case_label,
-                    });
-                }
-
-                if default_exists {
-                    let default_label = format!("{}.default", label);
-                    instructions.push(Instruction::Jump(default_label));
-                } else {
-                    instructions.push(Instruction::Jump(break_label.clone()));
-                }
-
-                instructions.extend(body.to_tacky(symbol_table));
-                instructions.push(Instruction::Label(break_label));
-                instructions
-            }
-        }
-    }
-}
-
-impl ToTacky for parser::ForInit {
-    type Output = Vec<Instruction>;
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        match self {
-            parser::ForInit::Declaration(declaration) => declaration.to_tacky(symbol_table),
-            parser::ForInit::Expression(expression) => expression
-                .map(|expr| expr.to_tacky(symbol_table).0)
-                .unwrap_or_else(Vec::new),
-        }
-    }
-}
-
-impl ToTacky for parser::VariableDeclaration {
-    type Output = Vec<Instruction>;
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        if matches!(
-            self.storage_class,
-            Some(parser::StorageClass::Static | parser::StorageClass::Extern)
-        ) {
-            return Vec::new();
-        }
-
-        let mut instructions = Vec::new();
-        if let Some(initialiser) = self.initialiser {
-            let (init_instructions, init_val) = initialiser.to_tacky(symbol_table);
-            instructions.extend(init_instructions);
-            instructions.push(Instruction::Copy {
-                src: init_val,
-                dst: Value::Var(self.identifier),
-            });
-        }
-        instructions
-    }
-}
-
-impl ToTacky for parser::Declaration {
-    type Output = Vec<Instruction>;
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        match self {
-            parser::Declaration::Variable(variable_declaration) => {
-                variable_declaration.to_tacky(symbol_table)
-            }
-            parser::Declaration::Function(func_declaration) => {
-                assert!(
-                    func_declaration.body.is_none(),
-                    "Function definitions should not be present at this stage"
-                );
-                vec![]
-            }
-        }
-    }
-}
-
-impl TryFrom<parser::BinaryOperator> for BinaryOperator {
-    type Error = ();
-
-    fn try_from(op: parser::BinaryOperator) -> Result<BinaryOperator, Self::Error> {
-        match op {
-            parser::BinaryOperator::Add => Ok(BinaryOperator::Add),
-            parser::BinaryOperator::Subtract => Ok(BinaryOperator::Subtract),
-            parser::BinaryOperator::Multiply => Ok(BinaryOperator::Multiply),
-            parser::BinaryOperator::Divide => Ok(BinaryOperator::Divide),
-            parser::BinaryOperator::Remainder => Ok(BinaryOperator::Remainder),
-            parser::BinaryOperator::BitwiseAnd => Ok(BinaryOperator::BitwiseAnd),
-            parser::BinaryOperator::BitwiseOr => Ok(BinaryOperator::BitwiseOr),
-            parser::BinaryOperator::BitwiseXor => Ok(BinaryOperator::BitwiseXor),
-            parser::BinaryOperator::LeftShift => Ok(BinaryOperator::LeftShift),
-            parser::BinaryOperator::RightShift => Ok(BinaryOperator::RightShift),
-            parser::BinaryOperator::Equal => Ok(BinaryOperator::Equal),
-            parser::BinaryOperator::NotEqual => Ok(BinaryOperator::NotEqual),
-            parser::BinaryOperator::LessThan => Ok(BinaryOperator::LessThan),
-            parser::BinaryOperator::GreaterThan => Ok(BinaryOperator::GreaterThan),
-            parser::BinaryOperator::LessEqual => Ok(BinaryOperator::LessEqual),
-            parser::BinaryOperator::GreaterEqual => Ok(BinaryOperator::GreaterEqual),
-            _ => Err(()),
-        }
-    }
-}
-
-impl ToTacky for parser::Expression {
-    type Output = (Vec<Instruction>, Value);
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        match self {
-            parser::Expression::Factor(factor) => factor.to_tacky(symbol_table),
-            parser::Expression::BinaryOp { op, left, right }
-                if BinaryOperator::try_from(op).is_ok() =>
-            {
-                let (instructions1, var1) = left.to_tacky(symbol_table);
-                let (instructions2, var2) = right.to_tacky(symbol_table);
-                let dst = next_binary_op_var();
-                let instruction = Instruction::BinaryOp {
-                    op: BinaryOperator::try_from(op).unwrap(),
-                    val1: var1,
-                    val2: var2,
-                    dst: dst.clone(),
-                };
-                (
-                    instructions1
-                        .into_iter()
-                        .chain(instructions2.into_iter())
-                        .chain(std::iter::once(instruction))
-                        .collect(),
-                    dst,
-                )
-            }
-            parser::Expression::BinaryOp {
-                op: parser::BinaryOperator::LogicalAnd,
-                left,
-                right,
-            } => {
-                let end_label = next_jump_label("binop_end");
-                let false_label = next_jump_label("binop_false");
-                let out_val = next_binary_op_var();
-
-                // Get val1, if zero jump to false
-                let (mut instructions, val1) = left.to_tacky(symbol_table);
-                instructions.push(Instruction::JumpIfZero {
-                    val: val1,
-                    target: false_label.clone(),
-                });
-
-                // Get val2, if zero jump to false
-                let (instructions2, val2) = right.to_tacky(symbol_table);
-                instructions.extend(instructions2);
-                instructions.push(Instruction::JumpIfZero {
-                    val: val2,
-                    target: false_label.clone(),
-                });
-
-                // Mark output as 1 (true) and jump to end
-                instructions.push(Instruction::Copy {
-                    src: Value::Constant(1),
-                    dst: out_val.clone(),
-                });
-                instructions.push(Instruction::Jump(end_label.clone()));
-
-                // False label, mark output as 0 (false)
-                instructions.push(Instruction::Label(false_label));
-                instructions.push(Instruction::Copy {
-                    src: Value::Constant(0),
-                    dst: out_val.clone(),
-                });
-
-                instructions.push(Instruction::Label(end_label));
-
-                (instructions, out_val)
-            }
-            parser::Expression::BinaryOp {
-                op: parser::BinaryOperator::LogicalOr,
-                left,
-                right,
-            } => {
-                let end_label = next_jump_label("binop_end");
-                let true_label = next_jump_label("binop_true");
-                let out_val = next_binary_op_var();
-
-                // Get val1, if not zero jump to true
-                let (mut instructions, val1) = left.to_tacky(symbol_table);
-                instructions.push(Instruction::JumpIfNotZero {
-                    val: val1,
-                    target: true_label.clone(),
-                });
-
-                // Get val2, if not zero jump to true
-                let (instructions2, val2) = right.to_tacky(symbol_table);
-                instructions.extend(instructions2);
-                instructions.push(Instruction::JumpIfNotZero {
-                    val: val2,
-                    target: true_label.clone(),
-                });
-
-                // Mark output as 0 (false) and jump to end
-                instructions.push(Instruction::Copy {
-                    src: Value::Constant(0),
-                    dst: out_val.clone(),
-                });
-                instructions.push(Instruction::Jump(end_label.clone()));
-
-                // False label, mark output as 1 (true)
-                instructions.push(Instruction::Label(true_label));
-                instructions.push(Instruction::Copy {
-                    src: Value::Constant(1),
-                    dst: out_val.clone(),
-                });
-
-                instructions.push(Instruction::Label(end_label));
-
-                (instructions, out_val)
-            }
-            parser::Expression::Assignment { left, right } => {
-                let (mut instructions, right_val) = right.to_tacky(symbol_table);
-                let left_val = left.to_tacky(symbol_table).1;
-                instructions.push(Instruction::Copy {
-                    src: right_val,
-                    dst: left_val.clone(),
-                });
-                (instructions, left_val)
-            }
-            parser::Expression::BinaryOp { .. } => unreachable!(),
-            parser::Expression::Conditional {
-                condition,
-                then_branch,
-                else_branch,
-            } => {
-                let else_label = next_jump_label("cond_else");
-                let end_label = next_jump_label("cond_end");
-                let out_val = next_binary_op_var();
-                let (mut instructions, cond) = condition.to_tacky(symbol_table);
-                instructions.push(Instruction::JumpIfZero {
-                    val: cond,
-                    target: else_label.clone(),
-                });
-                let (then_instructions, then_val) = then_branch.to_tacky(symbol_table);
-                instructions.extend(then_instructions);
-                instructions.push(Instruction::Copy {
-                    src: then_val,
-                    dst: out_val.clone(),
-                });
-                instructions.push(Instruction::Jump(end_label.clone()));
-                instructions.push(Instruction::Label(else_label));
-                let (else_instructions, else_val) = else_branch.to_tacky(symbol_table);
-                instructions.extend(else_instructions);
-                instructions.push(Instruction::Copy {
-                    src: else_val,
-                    dst: out_val.clone(),
-                });
-                instructions.push(Instruction::Label(end_label));
-                (instructions, out_val)
-            }
-        }
-    }
-}
-
-impl ToTacky for parser::Factor {
-    type Output = (Vec<Instruction>, Value);
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        match self {
-            parser::Factor::UnaryOp { op, fac }
-                if matches!(
-                    op,
-                    parser::UnaryOperator::PrefixIncrement | parser::UnaryOperator::PrefixDecrement
-                ) =>
-            {
-                let (mut instructions, var) = fac.to_tacky(symbol_table);
-                let dst = next_unary_op_var();
-                instructions.push(Instruction::BinaryOp {
-                    op: if op == parser::UnaryOperator::PrefixIncrement {
-                        BinaryOperator::Add
-                    } else {
-                        BinaryOperator::Subtract
-                    },
-                    val1: var.clone(),
-                    val2: Value::Constant(1),
-                    dst: dst.clone(),
-                });
-                instructions.push(Instruction::Copy {
-                    src: dst.clone(),
-                    dst: var,
-                });
-                (instructions, dst)
-            }
-            parser::Factor::UnaryOp { op, fac } => {
-                let (mut instructions, src) = fac.to_tacky(symbol_table);
-                let dst = next_unary_op_var();
-                instructions.push(Instruction::UnaryOp {
-                    op,
-                    src,
-                    dst: dst.clone(),
-                });
-                (instructions, dst)
-            }
-            parser::Factor::Postfix(postfix) => postfix.to_tacky(symbol_table),
-        }
-    }
-}
-
-impl ToTacky for parser::Postfix {
-    type Output = (Vec<Instruction>, Value);
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        debug_assert!(
-            self.postfix.len() <= 1,
-            "Only one postfix operator is supported"
-        );
-        let (mut instructions, var) = self.primary.to_tacky(symbol_table);
-        if let Some(op) = self.postfix.into_iter().next() {
-            let dst = next_unary_op_var();
-            instructions.push(Instruction::Copy {
-                src: var.clone(),
-                dst: dst.clone(),
-            });
-            instructions.push(Instruction::BinaryOp {
-                op: if op == parser::PostfixOp::PostfixIncrement {
-                    BinaryOperator::Add
-                } else {
-                    BinaryOperator::Subtract
-                },
-                val1: dst.clone(),
-                val2: Value::Constant(1),
-                dst: var,
-            });
-            (instructions, dst)
-        } else {
-            (instructions, var)
-        }
-    }
-}
-
-impl ToTacky for parser::Primary {
-    type Output = (Vec<Instruction>, Value);
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        match self {
-            parser::Primary::Constant(val) => (vec![], Value::Constant(val)),
-            parser::Primary::Paren(expression) => expression.to_tacky(symbol_table),
-            parser::Primary::Var(identifier) => (vec![], Value::Var(identifier)),
-            parser::Primary::FunctionCall(identifier, argument_list) => {
-                let (mut instructions, args) = argument_list.to_tacky(symbol_table);
-                let dst = next_func_result_var(&identifier);
-                instructions.push(Instruction::FunCall {
-                    name: identifier,
-                    args,
-                    dst: dst.clone(),
-                });
-                (instructions, dst)
-            }
-        }
-    }
-}
-
-impl ToTacky for parser::ArgumentList {
-    type Output = (Vec<Instruction>, Vec<Value>);
-
-    fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
-        self.0
-            .into_iter()
-            .map(|arg| {
-                let (mut instructions, val) = arg.to_tacky(symbol_table);
-                let arg_val = next_argument_var();
-                instructions.push(Instruction::Copy {
-                    src: val,
-                    dst: arg_val.clone(),
-                });
-                (instructions, arg_val)
-            })
-            .fold(
-                (Vec::new(), Vec::new()),
-                |(mut acc_instructions, mut acc_values), (instructions, values)| {
-                    acc_instructions.extend(instructions);
-                    acc_values.push(values);
-                    (acc_instructions, acc_values)
-                },
-            )
-    }
-}
+// use std::{
+//     fmt::Display,
+//     sync::atomic::{AtomicUsize, Ordering},
+// };
+
+// use crate::{
+//     parser,
+//     resolve_types::{IdentifierAttribute, InitialValue, SymbolTable},
+//     semantic_analysis::get_expression_constant,
+// };
+
+// static UNARY_OP_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+// static BINARY_OP_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+// static JUMP_LABEL_COUNTER: AtomicUsize = AtomicUsize::new(0);
+// static ARGUMENT_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+// static FUNC_RESULT_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+// fn next_unary_op_var() -> Value {
+//     Value::Var(format!(
+//         "unary_op.{}",
+//         UNARY_OP_VAR_COUNTER.fetch_add(1, Ordering::SeqCst)
+//     ))
+// }
+
+// fn next_binary_op_var() -> Value {
+//     Value::Var(format!(
+//         "binary_op.{}",
+//         BINARY_OP_VAR_COUNTER.fetch_add(1, Ordering::SeqCst)
+//     ))
+// }
+
+// fn next_jump_label(name: impl Display) -> String {
+//     format!(
+//         "label_{}.{}",
+//         name,
+//         JUMP_LABEL_COUNTER.fetch_add(1, Ordering::SeqCst)
+//     )
+// }
+
+// fn next_argument_var() -> Value {
+//     Value::Var(format!(
+//         "arg.{}",
+//         ARGUMENT_VAR_COUNTER.fetch_add(1, Ordering::SeqCst)
+//     ))
+// }
+
+// fn next_func_result_var(func_name: impl Display) -> Value {
+//     Value::Var(format!(
+//         "result.{}.{}",
+//         func_name,
+//         FUNC_RESULT_VAR_COUNTER.fetch_add(1, Ordering::SeqCst)
+//     ))
+// }
+
+// #[derive(Debug)]
+// pub struct Program(pub Vec<TopLevel>);
+
+// #[derive(Debug)]
+// pub enum TopLevel {
+//     FunctionDefinition {
+//         identifier: String,
+//         params: Vec<String>,
+//         body: Vec<Instruction>,
+//         global: bool,
+//     },
+//     StaticVariable {
+//         identifier: String,
+//         init: i32,
+//         global: bool,
+//     },
+// }
+
+// #[derive(Debug)]
+// pub enum Instruction {
+//     Return(Value),
+//     UnaryOp {
+//         op: parser::UnaryOperator,
+//         src: Value,
+//         dst: Value,
+//     },
+//     BinaryOp {
+//         op: BinaryOperator,
+//         val1: Value,
+//         val2: Value,
+//         dst: Value,
+//     },
+//     Copy {
+//         src: Value,
+//         dst: Value,
+//     },
+//     Jump(String),
+//     JumpIfZero {
+//         val: Value,
+//         target: String,
+//     },
+//     JumpIfNotZero {
+//         val: Value,
+//         target: String,
+//     },
+//     Label(String),
+//     FunCall {
+//         name: String,
+//         args: Vec<Value>,
+//         dst: Value,
+//     },
+// }
+
+// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// pub enum BinaryOperator {
+//     Add,
+//     Subtract,
+//     Multiply,
+//     Divide,
+//     Remainder,
+//     BitwiseAnd,
+//     BitwiseOr,
+//     BitwiseXor,
+//     LeftShift,
+//     RightShift,
+
+//     Equal,
+//     NotEqual,
+//     LessThan,
+//     GreaterThan,
+//     LessEqual,
+//     GreaterEqual,
+// }
+
+// #[derive(Debug, Clone, PartialEq, Eq)]
+// pub enum Value {
+//     Constant(u32),
+//     Var(String),
+// }
+
+// pub trait ToTacky {
+//     type Output;
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output;
+// }
+
+// impl ToTacky for parser::Program {
+//     type Output = Program;
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         let function_top_level = self
+//             .0
+//             .into_iter()
+//             .filter_map(|declaration| match declaration {
+//                 parser::Declaration::Function(func_def) => func_def.to_tacky(symbol_table),
+//                 parser::Declaration::Variable(_) => None,
+//             });
+
+//         let static_variables =
+//             symbol_table
+//                 .symbols
+//                 .iter()
+//                 .filter_map(|(identifier, (_ty, attr))| match attr {
+//                     IdentifierAttribute::Static { init, global } => match init {
+//                         InitialValue::Initial(i) => Some(TopLevel::StaticVariable {
+//                             identifier: identifier.clone(),
+//                             init: *i,
+//                             global: *global,
+//                         }),
+//                         InitialValue::Tentative => Some(TopLevel::StaticVariable {
+//                             identifier: identifier.clone(),
+//                             init: 0,
+//                             global: *global,
+//                         }),
+//                         InitialValue::NoInitialiser => None,
+//                     },
+//                     _ => None,
+//                 });
+
+//         Program(function_top_level.chain(static_variables).collect())
+//     }
+// }
+
+// impl ToTacky for parser::FuncDeclaration {
+//     type Output = Option<TopLevel>;
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         self.body.map(|body| TopLevel::FunctionDefinition {
+//             identifier: self.identifier.clone(),
+//             params: self.parameters.to_tacky(symbol_table),
+//             body: body
+//                 .to_tacky(symbol_table)
+//                 .into_iter()
+//                 .chain(std::iter::once(Instruction::Return(Value::Constant(0))))
+//                 .collect(),
+//             global: symbol_table.is_global_function(self.identifier),
+//         })
+//     }
+// }
+
+// impl ToTacky for parser::ParamList {
+//     type Output = Vec<String>;
+
+//     fn to_tacky(self, _symbol_table: &SymbolTable) -> Self::Output {
+//         self.0
+//     }
+// }
+
+// impl ToTacky for parser::Block {
+//     type Output = Vec<Instruction>;
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         self.0
+//             .into_iter()
+//             .flat_map(|item| item.to_tacky(symbol_table))
+//             .collect()
+//     }
+// }
+
+// impl ToTacky for parser::BlockItem {
+//     type Output = Vec<Instruction>;
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         match self {
+//             parser::BlockItem::Statement(statement) => statement.to_tacky(symbol_table),
+//             parser::BlockItem::Declaration(declaration) => declaration.to_tacky(symbol_table),
+//         }
+//     }
+// }
+
+// impl ToTacky for parser::Statement {
+//     type Output = Vec<Instruction>;
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         match self {
+//             parser::Statement::Return(exp) => {
+//                 let (mut instructions, var) = exp.to_tacky(symbol_table);
+//                 instructions.push(Instruction::Return(var));
+//                 instructions
+//             }
+//             parser::Statement::Expression(expression) => expression.to_tacky(symbol_table).0,
+//             parser::Statement::Null => vec![],
+//             parser::Statement::If {
+//                 condition,
+//                 then_branch,
+//                 else_branch,
+//             } => {
+//                 let else_label = next_jump_label("if_else");
+//                 let end_label = next_jump_label("if_end");
+//                 let (mut instructions, cond) = condition.to_tacky(symbol_table);
+//                 instructions.push(Instruction::JumpIfZero {
+//                     val: cond,
+//                     target: else_label.clone(),
+//                 });
+//                 instructions.extend(then_branch.to_tacky(symbol_table));
+//                 instructions.push(Instruction::Jump(end_label.clone()));
+//                 instructions.push(Instruction::Label(else_label));
+//                 if let Some(else_branch) = else_branch {
+//                     instructions.extend(else_branch.to_tacky(symbol_table));
+//                 }
+//                 instructions.push(Instruction::Label(end_label));
+
+//                 instructions
+//             }
+//             parser::Statement::Block(block) => block.to_tacky(symbol_table),
+//             parser::Statement::Labeled(label, statement) => {
+//                 let mut instructions = vec![Instruction::Label(label)];
+//                 instructions.extend(statement.to_tacky(symbol_table));
+//                 instructions
+//             }
+//             parser::Statement::Goto(label) => {
+//                 vec![Instruction::Jump(label)]
+//             }
+//             parser::Statement::Break(label) => {
+//                 vec![Instruction::Jump(format!(
+//                     "{}.break",
+//                     label.expect("Loops have not been resolved")
+//                 ))]
+//             }
+//             parser::Statement::Continue(label) => {
+//                 vec![Instruction::Jump(format!(
+//                     "{}.continue",
+//                     label.expect("Loops have not been resolved")
+//                 ))]
+//             }
+//             parser::Statement::While {
+//                 condition,
+//                 body,
+//                 label,
+//             } => {
+//                 let label = label.clone().expect("Loops have not been resolved");
+//                 let continue_label = format!("{}.continue", label);
+//                 let break_label = format!("{}.break", label);
+
+//                 let mut instructions = vec![Instruction::Label(continue_label.clone())];
+//                 let (cond_instructions, cond) = condition.to_tacky(symbol_table);
+//                 instructions.extend(cond_instructions);
+//                 instructions.push(Instruction::JumpIfZero {
+//                     val: cond,
+//                     target: break_label.clone(),
+//                 });
+//                 instructions.extend(body.to_tacky(symbol_table));
+//                 instructions.push(Instruction::Jump(continue_label));
+//                 instructions.push(Instruction::Label(break_label));
+//                 instructions
+//             }
+//             parser::Statement::DoWhile {
+//                 body,
+//                 condition,
+//                 label,
+//             } => {
+//                 let label = label.clone().expect("Loops have not been resolved");
+//                 let start_label = format!("{}.start", label);
+//                 let continue_label = format!("{}.continue", label);
+//                 let break_label = format!("{}.break", label);
+
+//                 let mut instructions = vec![Instruction::Label(start_label.clone())];
+//                 instructions.extend(body.to_tacky(symbol_table));
+//                 instructions.push(Instruction::Label(continue_label));
+//                 let (cond_instructions, cond) = condition.to_tacky(symbol_table);
+//                 instructions.extend(cond_instructions);
+//                 instructions.push(Instruction::JumpIfNotZero {
+//                     val: cond,
+//                     target: start_label,
+//                 });
+//                 instructions.push(Instruction::Label(break_label));
+//                 instructions
+//             }
+//             parser::Statement::For {
+//                 init,
+//                 condition,
+//                 post,
+//                 body,
+//                 label,
+//             } => {
+//                 let label = label.clone().expect("Loops have not been resolved");
+//                 let start_label = format!("{}.start", label);
+//                 let continue_label = format!("{}.continue", label);
+//                 let break_label = format!("{}.break", label);
+
+//                 let mut instructions = init.to_tacky(symbol_table);
+//                 instructions.push(Instruction::Label(start_label.clone()));
+//                 if let Some(condition) = condition {
+//                     let (cond_instructions, cond) = condition.to_tacky(symbol_table);
+//                     instructions.extend(cond_instructions);
+//                     instructions.push(Instruction::JumpIfZero {
+//                         val: cond,
+//                         target: break_label.clone(),
+//                     });
+//                 }
+//                 instructions.extend(body.to_tacky(symbol_table));
+//                 instructions.push(Instruction::Label(continue_label.clone()));
+//                 if let Some(post) = post {
+//                     instructions.extend(post.to_tacky(symbol_table).0);
+//                 }
+//                 instructions.push(Instruction::Jump(start_label));
+//                 instructions.push(Instruction::Label(break_label));
+//                 instructions
+//             }
+//             parser::Statement::Case(expression, statement, target) => {
+//                 let label = format!(
+//                     "{}.case.{}",
+//                     target.unwrap(),
+//                     get_expression_constant(&expression).unwrap()
+//                 );
+//                 let mut instructions = vec![Instruction::Label(label)];
+//                 instructions.extend(statement.to_tacky(symbol_table));
+//                 instructions
+//             }
+//             parser::Statement::Default(statement, target) => {
+//                 let label = format!("{}.default", target.unwrap());
+//                 let mut instructions = vec![Instruction::Label(label)];
+//                 instructions.extend(statement.to_tacky(symbol_table));
+//                 instructions
+//             }
+//             parser::Statement::Switch {
+//                 condition,
+//                 body,
+//                 label,
+//                 cases,
+//                 default_exists,
+//             } => {
+//                 let label = label.clone().expect("Loops have not been resolved");
+
+//                 let break_label = format!("{}.break", label);
+//                 let (mut instructions, cond) = condition.to_tacky(symbol_table);
+//                 for case in cases {
+//                     let case_label = format!("{}.case.{}", label, case);
+//                     let dst = next_binary_op_var();
+//                     instructions.push(Instruction::BinaryOp {
+//                         op: BinaryOperator::Equal,
+//                         val1: cond.clone(),
+//                         val2: Value::Constant(case),
+//                         dst: dst.clone(),
+//                     });
+//                     instructions.push(Instruction::JumpIfNotZero {
+//                         val: dst,
+//                         target: case_label,
+//                     });
+//                 }
+
+//                 if default_exists {
+//                     let default_label = format!("{}.default", label);
+//                     instructions.push(Instruction::Jump(default_label));
+//                 } else {
+//                     instructions.push(Instruction::Jump(break_label.clone()));
+//                 }
+
+//                 instructions.extend(body.to_tacky(symbol_table));
+//                 instructions.push(Instruction::Label(break_label));
+//                 instructions
+//             }
+//         }
+//     }
+// }
+
+// impl ToTacky for parser::ForInit {
+//     type Output = Vec<Instruction>;
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         match self {
+//             parser::ForInit::Declaration(declaration) => declaration.to_tacky(symbol_table),
+//             parser::ForInit::Expression(expression) => expression
+//                 .map(|expr| expr.to_tacky(symbol_table).0)
+//                 .unwrap_or_else(Vec::new),
+//         }
+//     }
+// }
+
+// impl ToTacky for parser::VariableDeclaration {
+//     type Output = Vec<Instruction>;
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         if matches!(
+//             self.storage_class,
+//             Some(parser::StorageClass::Static | parser::StorageClass::Extern)
+//         ) {
+//             return Vec::new();
+//         }
+
+//         let mut instructions = Vec::new();
+//         if let Some(initialiser) = self.initialiser {
+//             let (init_instructions, init_val) = initialiser.to_tacky(symbol_table);
+//             instructions.extend(init_instructions);
+//             instructions.push(Instruction::Copy {
+//                 src: init_val,
+//                 dst: Value::Var(self.identifier),
+//             });
+//         }
+//         instructions
+//     }
+// }
+
+// impl ToTacky for parser::Declaration {
+//     type Output = Vec<Instruction>;
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         match self {
+//             parser::Declaration::Variable(variable_declaration) => {
+//                 variable_declaration.to_tacky(symbol_table)
+//             }
+//             parser::Declaration::Function(func_declaration) => {
+//                 assert!(
+//                     func_declaration.body.is_none(),
+//                     "Function definitions should not be present at this stage"
+//                 );
+//                 vec![]
+//             }
+//         }
+//     }
+// }
+
+// impl TryFrom<parser::BinaryOperator> for BinaryOperator {
+//     type Error = ();
+
+//     fn try_from(op: parser::BinaryOperator) -> Result<BinaryOperator, Self::Error> {
+//         match op {
+//             parser::BinaryOperator::Add => Ok(BinaryOperator::Add),
+//             parser::BinaryOperator::Subtract => Ok(BinaryOperator::Subtract),
+//             parser::BinaryOperator::Multiply => Ok(BinaryOperator::Multiply),
+//             parser::BinaryOperator::Divide => Ok(BinaryOperator::Divide),
+//             parser::BinaryOperator::Remainder => Ok(BinaryOperator::Remainder),
+//             parser::BinaryOperator::BitwiseAnd => Ok(BinaryOperator::BitwiseAnd),
+//             parser::BinaryOperator::BitwiseOr => Ok(BinaryOperator::BitwiseOr),
+//             parser::BinaryOperator::BitwiseXor => Ok(BinaryOperator::BitwiseXor),
+//             parser::BinaryOperator::LeftShift => Ok(BinaryOperator::LeftShift),
+//             parser::BinaryOperator::RightShift => Ok(BinaryOperator::RightShift),
+//             parser::BinaryOperator::Equal => Ok(BinaryOperator::Equal),
+//             parser::BinaryOperator::NotEqual => Ok(BinaryOperator::NotEqual),
+//             parser::BinaryOperator::LessThan => Ok(BinaryOperator::LessThan),
+//             parser::BinaryOperator::GreaterThan => Ok(BinaryOperator::GreaterThan),
+//             parser::BinaryOperator::LessEqual => Ok(BinaryOperator::LessEqual),
+//             parser::BinaryOperator::GreaterEqual => Ok(BinaryOperator::GreaterEqual),
+//             _ => Err(()),
+//         }
+//     }
+// }
+
+// impl ToTacky for parser::Expression {
+//     type Output = (Vec<Instruction>, Value);
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         match self {
+//             parser::Expression::Factor(factor) => factor.to_tacky(symbol_table),
+//             parser::Expression::BinaryOp { op, left, right }
+//                 if BinaryOperator::try_from(op).is_ok() =>
+//             {
+//                 let (instructions1, var1) = left.to_tacky(symbol_table);
+//                 let (instructions2, var2) = right.to_tacky(symbol_table);
+//                 let dst = next_binary_op_var();
+//                 let instruction = Instruction::BinaryOp {
+//                     op: BinaryOperator::try_from(op).unwrap(),
+//                     val1: var1,
+//                     val2: var2,
+//                     dst: dst.clone(),
+//                 };
+//                 (
+//                     instructions1
+//                         .into_iter()
+//                         .chain(instructions2.into_iter())
+//                         .chain(std::iter::once(instruction))
+//                         .collect(),
+//                     dst,
+//                 )
+//             }
+//             parser::Expression::BinaryOp {
+//                 op: parser::BinaryOperator::LogicalAnd,
+//                 left,
+//                 right,
+//             } => {
+//                 let end_label = next_jump_label("binop_end");
+//                 let false_label = next_jump_label("binop_false");
+//                 let out_val = next_binary_op_var();
+
+//                 // Get val1, if zero jump to false
+//                 let (mut instructions, val1) = left.to_tacky(symbol_table);
+//                 instructions.push(Instruction::JumpIfZero {
+//                     val: val1,
+//                     target: false_label.clone(),
+//                 });
+
+//                 // Get val2, if zero jump to false
+//                 let (instructions2, val2) = right.to_tacky(symbol_table);
+//                 instructions.extend(instructions2);
+//                 instructions.push(Instruction::JumpIfZero {
+//                     val: val2,
+//                     target: false_label.clone(),
+//                 });
+
+//                 // Mark output as 1 (true) and jump to end
+//                 instructions.push(Instruction::Copy {
+//                     src: Value::Constant(1),
+//                     dst: out_val.clone(),
+//                 });
+//                 instructions.push(Instruction::Jump(end_label.clone()));
+
+//                 // False label, mark output as 0 (false)
+//                 instructions.push(Instruction::Label(false_label));
+//                 instructions.push(Instruction::Copy {
+//                     src: Value::Constant(0),
+//                     dst: out_val.clone(),
+//                 });
+
+//                 instructions.push(Instruction::Label(end_label));
+
+//                 (instructions, out_val)
+//             }
+//             parser::Expression::BinaryOp {
+//                 op: parser::BinaryOperator::LogicalOr,
+//                 left,
+//                 right,
+//             } => {
+//                 let end_label = next_jump_label("binop_end");
+//                 let true_label = next_jump_label("binop_true");
+//                 let out_val = next_binary_op_var();
+
+//                 // Get val1, if not zero jump to true
+//                 let (mut instructions, val1) = left.to_tacky(symbol_table);
+//                 instructions.push(Instruction::JumpIfNotZero {
+//                     val: val1,
+//                     target: true_label.clone(),
+//                 });
+
+//                 // Get val2, if not zero jump to true
+//                 let (instructions2, val2) = right.to_tacky(symbol_table);
+//                 instructions.extend(instructions2);
+//                 instructions.push(Instruction::JumpIfNotZero {
+//                     val: val2,
+//                     target: true_label.clone(),
+//                 });
+
+//                 // Mark output as 0 (false) and jump to end
+//                 instructions.push(Instruction::Copy {
+//                     src: Value::Constant(0),
+//                     dst: out_val.clone(),
+//                 });
+//                 instructions.push(Instruction::Jump(end_label.clone()));
+
+//                 // False label, mark output as 1 (true)
+//                 instructions.push(Instruction::Label(true_label));
+//                 instructions.push(Instruction::Copy {
+//                     src: Value::Constant(1),
+//                     dst: out_val.clone(),
+//                 });
+
+//                 instructions.push(Instruction::Label(end_label));
+
+//                 (instructions, out_val)
+//             }
+//             parser::Expression::Assignment { left, right } => {
+//                 let (mut instructions, right_val) = right.to_tacky(symbol_table);
+//                 let left_val = left.to_tacky(symbol_table).1;
+//                 instructions.push(Instruction::Copy {
+//                     src: right_val,
+//                     dst: left_val.clone(),
+//                 });
+//                 (instructions, left_val)
+//             }
+//             parser::Expression::BinaryOp { .. } => unreachable!(),
+//             parser::Expression::Conditional {
+//                 condition,
+//                 then_branch,
+//                 else_branch,
+//             } => {
+//                 let else_label = next_jump_label("cond_else");
+//                 let end_label = next_jump_label("cond_end");
+//                 let out_val = next_binary_op_var();
+//                 let (mut instructions, cond) = condition.to_tacky(symbol_table);
+//                 instructions.push(Instruction::JumpIfZero {
+//                     val: cond,
+//                     target: else_label.clone(),
+//                 });
+//                 let (then_instructions, then_val) = then_branch.to_tacky(symbol_table);
+//                 instructions.extend(then_instructions);
+//                 instructions.push(Instruction::Copy {
+//                     src: then_val,
+//                     dst: out_val.clone(),
+//                 });
+//                 instructions.push(Instruction::Jump(end_label.clone()));
+//                 instructions.push(Instruction::Label(else_label));
+//                 let (else_instructions, else_val) = else_branch.to_tacky(symbol_table);
+//                 instructions.extend(else_instructions);
+//                 instructions.push(Instruction::Copy {
+//                     src: else_val,
+//                     dst: out_val.clone(),
+//                 });
+//                 instructions.push(Instruction::Label(end_label));
+//                 (instructions, out_val)
+//             }
+//         }
+//     }
+// }
+
+// impl ToTacky for parser::Factor {
+//     type Output = (Vec<Instruction>, Value);
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         match self {
+//             parser::Factor::UnaryOp { op, fac }
+//                 if matches!(
+//                     op,
+//                     parser::UnaryOperator::PrefixIncrement | parser::UnaryOperator::PrefixDecrement
+//                 ) =>
+//             {
+//                 let (mut instructions, var) = fac.to_tacky(symbol_table);
+//                 let dst = next_unary_op_var();
+//                 instructions.push(Instruction::BinaryOp {
+//                     op: if op == parser::UnaryOperator::PrefixIncrement {
+//                         BinaryOperator::Add
+//                     } else {
+//                         BinaryOperator::Subtract
+//                     },
+//                     val1: var.clone(),
+//                     val2: Value::Constant(1),
+//                     dst: dst.clone(),
+//                 });
+//                 instructions.push(Instruction::Copy {
+//                     src: dst.clone(),
+//                     dst: var,
+//                 });
+//                 (instructions, dst)
+//             }
+//             parser::Factor::UnaryOp { op, fac } => {
+//                 let (mut instructions, src) = fac.to_tacky(symbol_table);
+//                 let dst = next_unary_op_var();
+//                 instructions.push(Instruction::UnaryOp {
+//                     op,
+//                     src,
+//                     dst: dst.clone(),
+//                 });
+//                 (instructions, dst)
+//             }
+//             parser::Factor::Postfix(postfix) => postfix.to_tacky(symbol_table),
+//         }
+//     }
+// }
+
+// impl ToTacky for parser::Postfix {
+//     type Output = (Vec<Instruction>, Value);
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         debug_assert!(
+//             self.postfix.len() <= 1,
+//             "Only one postfix operator is supported"
+//         );
+//         let (mut instructions, var) = self.primary.to_tacky(symbol_table);
+//         if let Some(op) = self.postfix.into_iter().next() {
+//             let dst = next_unary_op_var();
+//             instructions.push(Instruction::Copy {
+//                 src: var.clone(),
+//                 dst: dst.clone(),
+//             });
+//             instructions.push(Instruction::BinaryOp {
+//                 op: if op == parser::PostfixOp::PostfixIncrement {
+//                     BinaryOperator::Add
+//                 } else {
+//                     BinaryOperator::Subtract
+//                 },
+//                 val1: dst.clone(),
+//                 val2: Value::Constant(1),
+//                 dst: var,
+//             });
+//             (instructions, dst)
+//         } else {
+//             (instructions, var)
+//         }
+//     }
+// }
+
+// impl ToTacky for parser::Primary {
+//     type Output = (Vec<Instruction>, Value);
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         match self {
+//             parser::Primary::Constant(val) => (vec![], Value::Constant(val)),
+//             parser::Primary::Paren(expression) => expression.to_tacky(symbol_table),
+//             parser::Primary::Var(identifier) => (vec![], Value::Var(identifier)),
+//             parser::Primary::FunctionCall(identifier, argument_list) => {
+//                 let (mut instructions, args) = argument_list.to_tacky(symbol_table);
+//                 let dst = next_func_result_var(&identifier);
+//                 instructions.push(Instruction::FunCall {
+//                     name: identifier,
+//                     args,
+//                     dst: dst.clone(),
+//                 });
+//                 (instructions, dst)
+//             }
+//         }
+//     }
+// }
+
+// impl ToTacky for parser::ArgumentList {
+//     type Output = (Vec<Instruction>, Vec<Value>);
+
+//     fn to_tacky(self, symbol_table: &SymbolTable) -> Self::Output {
+//         self.0
+//             .into_iter()
+//             .map(|arg| {
+//                 let (mut instructions, val) = arg.to_tacky(symbol_table);
+//                 let arg_val = next_argument_var();
+//                 instructions.push(Instruction::Copy {
+//                     src: val,
+//                     dst: arg_val.clone(),
+//                 });
+//                 (instructions, arg_val)
+//             })
+//             .fold(
+//                 (Vec::new(), Vec::new()),
+//                 |(mut acc_instructions, mut acc_values), (instructions, values)| {
+//                     acc_instructions.extend(instructions);
+//                     acc_values.push(values);
+//                     (acc_instructions, acc_values)
+//                 },
+//             )
+//     }
+// }

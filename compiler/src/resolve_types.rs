@@ -2,32 +2,9 @@ use std::collections::HashMap;
 
 use crate::{
     parser,
-    semantic_analysis::{SemanticError, get_expression_constant},
+    semantic_analysis::{SemanticError, get_expression_value},
+    types::{self, Type},
 };
-
-#[derive(Debug)]
-pub enum Type {
-    Int,
-    Function { parameters: u32 },
-}
-
-impl PartialEq for Type {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                Self::Function {
-                    parameters: l_parameters,
-                    ..
-                },
-                Self::Function {
-                    parameters: r_parameters,
-                    ..
-                },
-            ) => l_parameters == r_parameters,
-            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub enum IdentifierAttribute {
@@ -39,7 +16,7 @@ pub enum IdentifierAttribute {
 #[derive(Debug, Clone)]
 pub enum InitialValue {
     Tentative,
-    Initial(i32),
+    Initial(types::Constant),
     NoInitialiser,
 }
 
@@ -76,7 +53,8 @@ impl SymbolTable {
     fn block_scope_variable_declared(
         &mut self,
         identifier: impl Into<String>,
-        init: Option<&parser::Expression>,
+        ty: Type,
+        init: Option<&parser::TypedExpression>,
         storage_class: Option<parser::StorageClass>,
     ) -> Result<String, SemanticError> {
         let identifier = identifier.into();
@@ -86,9 +64,9 @@ impl SymbolTable {
                     return Err(SemanticError::InitOnLocalExtern(identifier));
                 }
                 if let Some((prev_type, _prev_attr)) = self.symbols.get(&identifier) {
-                    if prev_type != &Type::Int {
+                    if prev_type != &ty {
                         return Err(SemanticError::TypeMismatch(format!(
-                            "Function {} redeclared as variable",
+                            "Variable {} redeclared as different type",
                             identifier
                         )));
                     }
@@ -96,7 +74,7 @@ impl SymbolTable {
                     self.symbols.insert(
                         identifier.clone(),
                         (
-                            Type::Int,
+                            ty,
                             IdentifierAttribute::Static {
                                 init: InitialValue::NoInitialiser,
                                 global: true,
@@ -106,17 +84,22 @@ impl SymbolTable {
                 }
             }
             Some(parser::StorageClass::Static) => {
-                let initial_value = if let Some(Some(i)) = init.map(get_expression_constant) {
-                    InitialValue::Initial(i as i32)
+                let initial_value = if let Some(Some(i)) =
+                    init.map(|ty_exp| get_expression_value(&ty_exp.expression))
+                {
+                    InitialValue::Initial(i)
                 } else if init.is_none() {
-                    InitialValue::Initial(0)
+                    InitialValue::Initial(
+                        types::Constant::zero_with_type(&ty)
+                            .expect("Cannot create zero value for type"),
+                    )
                 } else {
                     return Err(SemanticError::NonConstantExpression);
                 };
                 self.symbols.insert(
                     identifier.clone(),
                     (
-                        Type::Int,
+                        ty,
                         IdentifierAttribute::Static {
                             init: initial_value,
                             global: false,
@@ -126,7 +109,7 @@ impl SymbolTable {
             }
             _ => {
                 self.symbols
-                    .insert(identifier.clone(), (Type::Int, IdentifierAttribute::Local));
+                    .insert(identifier.clone(), (ty, IdentifierAttribute::Local));
             }
         }
 
@@ -136,29 +119,31 @@ impl SymbolTable {
     fn file_scope_variable_declared(
         &mut self,
         identifier: impl Into<String>,
-        init: Option<&parser::Expression>,
+        ty: Type,
+        init: Option<&parser::TypedExpression>,
         storage_class: Option<parser::StorageClass>,
     ) -> Result<String, SemanticError> {
         let identifier = identifier.into();
 
-        let mut initial_value = if let Some(Some(i)) = init.map(get_expression_constant) {
-            InitialValue::Initial(i as i32)
-        } else if init.is_none() {
-            if storage_class == Some(parser::StorageClass::Extern) {
-                InitialValue::NoInitialiser
+        let mut initial_value =
+            if let Some(Some(i)) = init.map(|ty_exp| get_expression_value(&ty_exp.expression)) {
+                InitialValue::Initial(i)
+            } else if init.is_none() {
+                if storage_class == Some(parser::StorageClass::Extern) {
+                    InitialValue::NoInitialiser
+                } else {
+                    InitialValue::Tentative
+                }
             } else {
-                InitialValue::Tentative
-            }
-        } else {
-            return Err(SemanticError::NonConstantExpression);
-        };
+                return Err(SemanticError::NonConstantExpression);
+            };
 
         let mut global = storage_class != Some(parser::StorageClass::Static);
 
         if let Some((prev_type, prev_attr)) = self.symbols.get(&identifier) {
-            if prev_type != &Type::Int {
+            if prev_type != &ty {
                 return Err(SemanticError::TypeMismatch(format!(
-                    "Function {} redeclared as variable",
+                    "Variable {} redeclared as different type",
                     identifier
                 )));
             }
@@ -189,7 +174,7 @@ impl SymbolTable {
         self.symbols.insert(
             identifier.clone(),
             (
-                Type::Int,
+                ty,
                 IdentifierAttribute::Static {
                     init: initial_value,
                     global,
@@ -203,13 +188,12 @@ impl SymbolTable {
     fn function_declared(
         &mut self,
         identifier: impl Into<String>,
-        parameters: u32,
+        ty: Type,
         has_body: bool,
         storage_class: Option<parser::StorageClass>,
     ) -> Result<String, SemanticError> {
         let identifier = identifier.into();
         let mut alread_defined = false;
-        let ty = Type::Function { parameters };
         let mut global = storage_class != Some(parser::StorageClass::Static);
 
         if let Some(prev_info) = self.symbols.get(&identifier) {
@@ -251,50 +235,15 @@ impl SymbolTable {
         Ok(identifier)
     }
 
-    fn lookup_variable(&self, identifier: impl Into<String>) -> Result<String, SemanticError> {
-        let identifier = identifier.into();
-        if self
-            .symbols
-            .get(&identifier)
-            .expect(format!("Variable not declared: {}", identifier).as_str())
-            .0
-            == Type::Int
-        {
-            Ok(identifier)
-        } else {
-            Err(SemanticError::TypeMismatch(format!(
-                "Expected variable, found function: {}",
-                identifier
-            )))
-        }
-    }
-
-    fn lookup_function(
+    fn loopup_identifier(
         &self,
         identifier: impl Into<String>,
-        arguments: u32,
-    ) -> Result<String, SemanticError> {
+    ) -> Result<(String, Type), SemanticError> {
         let identifier = identifier.into();
-        match self
-            .symbols
-            .get(&identifier)
-            .expect(format!("Function not declared: {}", identifier).as_str())
-            .0
-        {
-            Type::Function { parameters } => {
-                if parameters != arguments {
-                    Err(SemanticError::TypeMismatch(format!(
-                        "Function {} expects {} arguments, but {} were provided",
-                        identifier, parameters, arguments
-                    )))
-                } else {
-                    Ok(identifier)
-                }
-            }
-            _ => Err(SemanticError::TypeMismatch(format!(
-                "Expected function, found variable: {}",
-                identifier
-            ))),
+        if let Some((ty, _)) = self.symbols.get(&identifier) {
+            Ok((identifier, ty.clone()))
+        } else {
+            Err(SemanticError::IdentifierNotDeclared(identifier))
         }
     }
 }
@@ -323,6 +272,7 @@ impl ResolveTypes for parser::Program {
                     parser::Declaration::Variable(var_decl) => {
                         let identifier = symbol_table.file_scope_variable_declared(
                             var_decl.identifier,
+                            var_decl.ty.clone(),
                             var_decl.initialiser.as_ref(),
                             var_decl.storage_class,
                         )?;
@@ -330,6 +280,7 @@ impl ResolveTypes for parser::Program {
                             identifier,
                             initialiser: var_decl.initialiser,
                             storage_class: var_decl.storage_class,
+                            ty: var_decl.ty,
                         }))
                     }
                     parser::Declaration::Function(func_decl) => func_decl
@@ -345,20 +296,43 @@ impl ResolveTypes for parser::FuncDeclaration {
     fn resolve_types(self, symbol_table: &mut SymbolTable) -> Result<Self, SemanticError> {
         let identifier = symbol_table.function_declared(
             self.identifier,
-            self.parameters.0.len() as u32,
+            self.ty.clone(),
             self.body.is_some(),
             self.storage_class,
         )?;
 
         if let Some(body) = self.body {
-            for param in &self.parameters.0 {
-                symbol_table.block_scope_variable_declared(param.clone(), None, None)?;
+            for (param, param_ty) in self
+                .parameters
+                .0
+                .iter()
+                .zip(self.ty.get_function_params().unwrap())
+            {
+                symbol_table.block_scope_variable_declared(
+                    param.clone(),
+                    param_ty.clone(),
+                    None,
+                    None,
+                )?;
             }
+
+            let mut body = body.resolve_types(symbol_table)?;
+            for item in &mut body.0 {
+                if let parser::BlockItem::Statement(parser::Statement::Return(exp)) = item {
+                    let _exp_ty = exp.find_type(symbol_table)?;
+                    let Type::Function { return_type, .. } = &self.ty else {
+                        unreachable!();
+                    };
+                    *exp = convert_to(exp.clone(), *return_type.clone());
+                }
+            }
+
             Ok(parser::FuncDeclaration {
                 identifier: identifier,
                 parameters: self.parameters,
                 body: Some(body.resolve_types(symbol_table)?),
                 storage_class: self.storage_class,
+                ty: self.ty,
             })
         } else {
             Ok(parser::FuncDeclaration {
@@ -366,6 +340,7 @@ impl ResolveTypes for parser::FuncDeclaration {
                 parameters: self.parameters,
                 body: None,
                 storage_class: self.storage_class,
+                ty: self.ty,
             })
         }
     }
@@ -413,14 +388,17 @@ impl ResolveTypes for parser::VariableDeclaration {
         Ok(parser::VariableDeclaration {
             identifier: symbol_table.block_scope_variable_declared(
                 self.identifier,
+                self.ty.clone(),
                 self.initialiser.as_ref(),
                 self.storage_class,
             )?,
             initialiser: self
                 .initialiser
                 .map(|init| init.resolve_types(symbol_table))
-                .transpose()?,
+                .transpose()?
+                .map(|init| convert_to(init, self.ty.clone())),
             storage_class: self.storage_class,
+            ty: self.ty,
         })
     }
 }
@@ -510,13 +488,36 @@ impl ResolveTypes for parser::Statement {
                 label,
                 cases,
                 default_exists,
-            } => Ok(parser::Statement::Switch {
-                condition: condition.resolve_types(symbol_table)?,
-                body: Box::new(body.resolve_types(symbol_table)?),
-                label,
-                cases,
-                default_exists,
-            }),
+            } => {
+                let mut condition = condition.resolve_types(symbol_table)?;
+                let ty = condition.find_type(symbol_table)?;
+                let cases = cases
+                    .into_iter()
+                    .map(|constant| {
+                        constant.cast_to_type(ty.clone()).ok_or_else(|| {
+                            SemanticError::TypeMismatch(format!(
+                                "Case value {:?} cannot be converted to type {:?}",
+                                constant, condition.ty
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let mut used_cases = std::collections::HashSet::new();
+                for case in &cases {
+                    if !used_cases.insert(case.clone()) {
+                        return Err(SemanticError::DuplicateCaseValue(case.clone()));
+                    }
+                }
+
+                Ok(parser::Statement::Switch {
+                    condition,
+                    body: Box::new(body.resolve_types(symbol_table)?),
+                    label,
+                    cases,
+                    default_exists,
+                })
+            }
             parser::Statement::Block(block) => block
                 .resolve_types(symbol_table)
                 .map(parser::Statement::Block),
@@ -536,6 +537,17 @@ impl ResolveTypes for parser::ForInit {
                 .transpose()
                 .map(parser::ForInit::Expression),
         }
+    }
+}
+
+impl ResolveTypes for parser::TypedExpression {
+    fn resolve_types(self, symbol_table: &mut SymbolTable) -> Result<Self, SemanticError> {
+        let mut expression = self.expression.resolve_types(symbol_table)?;
+        let ty = expression.find_type(symbol_table)?;
+        Ok(parser::TypedExpression {
+            expression,
+            ty: Some(ty),
+        })
     }
 }
 
@@ -577,6 +589,10 @@ impl ResolveTypes for parser::Factor {
             parser::Factor::Postfix(postfix) => postfix
                 .resolve_types(symbol_table)
                 .map(parser::Factor::Postfix),
+            parser::Factor::Cast { ty, fac } => Ok(parser::Factor::Cast {
+                ty,
+                fac: Box::new(fac.resolve_types(symbol_table)?),
+            }),
         }
     }
 }
@@ -598,11 +614,41 @@ impl ResolveTypes for parser::Primary {
                 .resolve_types(symbol_table)
                 .map(|expr| parser::Primary::Paren(Box::new(expr))),
             parser::Primary::Var(identifier) => symbol_table
-                .lookup_variable(identifier)
+                .loopup_identifier(identifier)
+                .and_then(|(identifier, ty)| {
+                    if matches!(ty, Type::Function { .. }) {
+                        Err(SemanticError::TypeMismatch(format!(
+                            "Function {} used as variable",
+                            identifier
+                        )))
+                    } else {
+                        Ok(identifier)
+                    }
+                })
                 .map(parser::Primary::Var),
             parser::Primary::FunctionCall(identifier, argument_list) => {
                 let identifier =
-                    symbol_table.lookup_function(identifier, argument_list.0.len() as u32)?;
+                    symbol_table
+                        .loopup_identifier(identifier)
+                        .and_then(|(identifier, ty)| {
+                            if let Type::Function { params, .. } = ty {
+                                if params.len() != argument_list.0.len() {
+                                    Err(SemanticError::TypeMismatch(format!(
+                                        "Function {} expects {} arguments, but {} were provided",
+                                        identifier,
+                                        params.len(),
+                                        argument_list.0.len()
+                                    )))
+                                } else {
+                                    Ok(identifier)
+                                }
+                            } else {
+                                Err(SemanticError::TypeMismatch(format!(
+                                    "Identifier {} is not a function",
+                                    identifier
+                                )))
+                            }
+                        })?;
                 Ok(parser::Primary::FunctionCall(
                     identifier,
                     argument_list.resolve_types(symbol_table)?,
@@ -620,5 +666,161 @@ impl ResolveTypes for parser::ArgumentList {
                 .map(|arg| arg.resolve_types(symbol_table))
                 .collect::<Result<Vec<_>, _>>()?,
         ))
+    }
+}
+
+pub trait FindType {
+    fn find_type(&mut self, symbol_table: &SymbolTable) -> Result<Type, SemanticError>;
+}
+
+impl FindType for parser::TypedExpression {
+    fn find_type(&mut self, symbol_table: &SymbolTable) -> Result<Type, SemanticError> {
+        match &self.ty {
+            Some(ty) => Ok(ty.clone()),
+            None => {
+                let ty = self.expression.find_type(symbol_table)?;
+                self.ty = Some(ty.clone());
+                Ok(ty)
+            }
+        }
+    }
+}
+
+fn convert_to(expression: parser::TypedExpression, target_type: Type) -> parser::TypedExpression {
+    if expression.ty.as_ref() == Some(&target_type) {
+        expression
+    } else {
+        parser::TypedExpression {
+            expression: parser::Expression::Factor(parser::Factor::Cast {
+                ty: target_type.clone(),
+                fac: Box::new(parser::Factor::Postfix(parser::Postfix {
+                    postfix: Vec::new(),
+                    primary: parser::Primary::Paren(Box::new(expression)),
+                })),
+            }),
+            ty: Some(target_type),
+        }
+    }
+}
+
+impl FindType for parser::Expression {
+    fn find_type(&mut self, symbol_table: &SymbolTable) -> Result<Type, SemanticError> {
+        match self {
+            parser::Expression::Factor(factor) => factor.find_type(symbol_table),
+            parser::Expression::BinaryOp { op, left, right } => {
+                if matches!(
+                    *op,
+                    parser::BinaryOperator::LogicalAnd | parser::BinaryOperator::LogicalOr
+                ) {
+                    return Ok(Type::Int);
+                }
+
+                let left_type = left.find_type(symbol_table)?;
+                let right_type = right.find_type(symbol_table)?;
+                let common_type = Type::get_common_type(&left_type, &right_type);
+
+                *left = Box::new(convert_to(*left.clone(), common_type.clone()));
+                *right = Box::new(convert_to(*right.clone(), common_type.clone()));
+
+                Ok(match *op {
+                    parser::BinaryOperator::Add
+                    | parser::BinaryOperator::Subtract
+                    | parser::BinaryOperator::Multiply
+                    | parser::BinaryOperator::Divide
+                    | parser::BinaryOperator::Remainder
+                    | parser::BinaryOperator::BitwiseAnd
+                    | parser::BinaryOperator::BitwiseOr
+                    | parser::BinaryOperator::BitwiseXor => common_type,
+                    parser::BinaryOperator::LeftShift | parser::BinaryOperator::RightShift => {
+                        left_type
+                    }
+                    _ => Type::Int,
+                })
+            }
+            parser::Expression::Assignment { left, right } => {
+                let left_type = left.find_type(symbol_table)?;
+                let _right_type = right.find_type(symbol_table)?;
+                *right = Box::new(convert_to(*right.clone(), left_type.clone()));
+                Ok(left_type)
+            }
+            parser::Expression::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let _condition_type = condition.find_type(symbol_table)?;
+                let then_type = then_branch.find_type(symbol_table)?;
+                let else_type = else_branch.find_type(symbol_table)?;
+                let common_type = Type::get_common_type(&then_type, &else_type);
+
+                *then_branch = Box::new(convert_to(*then_branch.clone(), common_type.clone()));
+                *else_branch = Box::new(convert_to(*else_branch.clone(), common_type.clone()));
+
+                Ok(common_type)
+            }
+        }
+    }
+}
+
+impl FindType for parser::Factor {
+    fn find_type(&mut self, symbol_table: &SymbolTable) -> Result<Type, SemanticError> {
+        match self {
+            parser::Factor::UnaryOp { op, fac } => {
+                let inner = fac.find_type(symbol_table)?;
+                Ok(match op {
+                    parser::UnaryOperator::LogicalNot => Type::Int,
+                    parser::UnaryOperator::Complement
+                    | parser::UnaryOperator::Negate
+                    | parser::UnaryOperator::PrefixIncrement
+                    | parser::UnaryOperator::PrefixDecrement => inner,
+                })
+            }
+            parser::Factor::Postfix(postfix) => postfix.find_type(symbol_table),
+            parser::Factor::Cast { ty, fac } => {
+                let _ = fac.find_type(symbol_table)?;
+                Ok(ty.clone())
+            }
+        }
+    }
+}
+
+impl FindType for parser::Postfix {
+    fn find_type(&mut self, symbol_table: &SymbolTable) -> Result<Type, SemanticError> {
+        self.primary.find_type(symbol_table)
+    }
+}
+
+impl FindType for parser::Primary {
+    fn find_type(&mut self, symbol_table: &SymbolTable) -> Result<Type, SemanticError> {
+        match self {
+            parser::Primary::Constant(constant) => Ok(Type::from(constant.to_type())),
+            parser::Primary::Var(identifier) => {
+                let ty = symbol_table.loopup_identifier(&*identifier)?.1;
+                if matches!(ty, Type::Function { .. }) {
+                    unreachable!()
+                }
+                Ok(ty)
+            }
+            parser::Primary::Paren(typed_expression) => typed_expression.find_type(symbol_table),
+            parser::Primary::FunctionCall(identifier, args) => {
+                let ty = symbol_table.loopup_identifier(&*identifier)?.1;
+                if let Type::Function {
+                    params,
+                    return_type,
+                } = ty
+                {
+                    args.0
+                        .iter_mut()
+                        .zip(params.iter())
+                        .for_each(|(arg, param_type)| {
+                            *arg = convert_to(arg.clone(), param_type.clone());
+                        });
+
+                    Ok(*return_type)
+                } else {
+                    unreachable!()
+                }
+            }
+        }
     }
 }

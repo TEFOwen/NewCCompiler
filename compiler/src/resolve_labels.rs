@@ -45,6 +45,7 @@ impl CollectLabels for parser::FuncDeclaration {
                 .map(|body| body.collect_labels(labels))
                 .transpose()?,
             storage_class: self.storage_class,
+            ty: self.ty,
         })
     }
 }
@@ -177,6 +178,7 @@ impl ResolveLabels for parser::FuncDeclaration {
                 .map(|body| body.resolve_labels(labels))
                 .transpose()?,
             storage_class: self.storage_class,
+            ty: self.ty,
         })
     }
 }
@@ -195,8 +197,12 @@ impl ResolveLabels for parser::Block {
 impl ResolveLabels for parser::BlockItem {
     fn resolve_labels(self, labels: &mut HashMap<String, String>) -> Result<Self, SemanticError> {
         match self {
-            Self::Statement(statement) => Ok(Self::Statement(statement.resolve_labels(labels)?)),
-            Self::Declaration(declaration) => Ok(Self::Declaration(declaration)),
+            parser::BlockItem::Statement(statement) => Ok(parser::BlockItem::Statement(
+                statement.resolve_labels(labels)?,
+            )),
+            parser::BlockItem::Declaration(declaration) => {
+                Ok(parser::BlockItem::Declaration(declaration))
+            }
         }
     }
 }

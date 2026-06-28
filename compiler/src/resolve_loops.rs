@@ -2,7 +2,8 @@ use std::{collections::HashSet, fmt::Display, sync::atomic::AtomicUsize};
 
 use crate::{
     parser,
-    semantic_analysis::{SemanticError, get_expression_constant},
+    semantic_analysis::{SemanticError, get_expression_value},
+    types,
 };
 
 static LOOP_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -31,7 +32,7 @@ where
         current_loop: Option<String>,
         current_switch: Option<String>,
         current_break_target: Option<String>,
-        used_cases: &mut HashSet<u32>,
+        used_cases: &mut HashSet<types::Constant>,
         default_used: &mut bool,
     ) -> Result<Self, SemanticError>;
 }
@@ -42,7 +43,7 @@ impl ResolveLoops for parser::Program {
         current_loop: Option<String>,
         current_switch: Option<String>,
         current_break_target: Option<String>,
-        used_cases: &mut HashSet<u32>,
+        used_cases: &mut HashSet<types::Constant>,
         default_used: &mut bool,
     ) -> Result<Self, SemanticError> {
         Ok(parser::Program(
@@ -68,7 +69,7 @@ impl ResolveLoops for parser::FuncDeclaration {
         current_loop: Option<String>,
         current_switch: Option<String>,
         current_break_target: Option<String>,
-        used_cases: &mut HashSet<u32>,
+        used_cases: &mut HashSet<types::Constant>,
         default_used: &mut bool,
     ) -> Result<Self, SemanticError> {
         Ok(parser::FuncDeclaration {
@@ -87,6 +88,7 @@ impl ResolveLoops for parser::FuncDeclaration {
                     )
                 })
                 .transpose()?,
+            ty: self.ty,
         })
     }
 }
@@ -97,7 +99,7 @@ impl ResolveLoops for parser::Block {
         current_loop: Option<String>,
         current_switch: Option<String>,
         current_break_target: Option<String>,
-        used_cases: &mut HashSet<u32>,
+        used_cases: &mut HashSet<types::Constant>,
         default_used: &mut bool,
     ) -> Result<Self, SemanticError> {
         Ok(parser::Block(
@@ -123,7 +125,7 @@ impl ResolveLoops for parser::BlockItem {
         current_loop: Option<String>,
         current_switch: Option<String>,
         current_break_target: Option<String>,
-        used_cases: &mut HashSet<u32>,
+        used_cases: &mut HashSet<types::Constant>,
         default_used: &mut bool,
     ) -> Result<Self, SemanticError> {
         match self {
@@ -153,7 +155,7 @@ impl ResolveLoops for parser::Declaration {
         current_loop: Option<String>,
         current_switch: Option<String>,
         current_break_target: Option<String>,
-        used_cases: &mut HashSet<u32>,
+        used_cases: &mut HashSet<types::Constant>,
         default_used: &mut bool,
     ) -> Result<Self, SemanticError> {
         match self {
@@ -176,6 +178,7 @@ impl ResolveLoops for parser::Declaration {
                         parameters: func_declaration.parameters,
                         body,
                         storage_class: func_declaration.storage_class,
+                        ty: func_declaration.ty,
                     })
                 }),
         }
@@ -188,7 +191,7 @@ impl ResolveLoops for parser::Statement {
         current_loop: Option<String>,
         current_switch: Option<String>,
         current_break_target: Option<String>,
-        used_cases: &mut HashSet<u32>,
+        used_cases: &mut HashSet<types::Constant>,
         default_used: &mut bool,
     ) -> Result<Self, SemanticError> {
         match self {
@@ -287,14 +290,14 @@ impl ResolveLoops for parser::Statement {
                 if current_switch.is_none() {
                     return Err(SemanticError::CaseNotWithinSwitch);
                 }
-                match get_expression_constant(&expression) {
+                match get_expression_value(&expression.expression) {
                     Some(value) => {
                         if used_cases.contains(&value) {
-                            return Err(SemanticError::DuplicateCaseValue(value.to_string()));
+                            return Err(SemanticError::DuplicateCaseValue(value));
                         }
                         used_cases.insert(value);
                     }
-                    None => {
+                    _ => {
                         return Err(SemanticError::NonConstantExpression);
                     }
                 }
@@ -457,20 +460,20 @@ impl ResolveLoops for parser::ForInit {
         _current_loop: Option<String>,
         _current_switch: Option<String>,
         _current_break_target: Option<String>,
-        _used_cases: &mut HashSet<u32>,
+        _used_cases: &mut HashSet<types::Constant>,
         _default_used: &mut bool,
     ) -> Result<Self, SemanticError> {
         Ok(self)
     }
 }
 
-impl ResolveLoops for parser::Expression {
+impl ResolveLoops for parser::TypedExpression {
     fn resolve_loops(
         self,
         _current_loop: Option<String>,
         _current_switch: Option<String>,
         _current_break_target: Option<String>,
-        _used_cases: &mut HashSet<u32>,
+        _used_cases: &mut HashSet<types::Constant>,
         _default_used: &mut bool,
     ) -> Result<Self, SemanticError> {
         Ok(self)

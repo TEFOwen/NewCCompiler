@@ -1,15 +1,15 @@
 use thiserror::Error;
 
-use crate::{parser, resolve_types::SymbolTable};
+use crate::{parser, resolve_types::SymbolTable, types};
 
-pub fn get_expression_constant(expression: &parser::Expression) -> Option<u32> {
+pub fn get_expression_value(expression: &parser::Expression) -> Option<types::Constant> {
     if let parser::Expression::Factor(parser::Factor::Postfix(parser::Postfix {
         primary,
         postfix,
     })) = expression
     {
         if postfix.len() == 0 {
-            get_primary_constant(primary)
+            get_primary_value(primary)
         } else {
             None
         }
@@ -18,10 +18,10 @@ pub fn get_expression_constant(expression: &parser::Expression) -> Option<u32> {
     }
 }
 
-pub fn get_primary_constant(primary: &parser::Primary) -> Option<u32> {
+pub fn get_primary_value(primary: &parser::Primary) -> Option<types::Constant> {
     match primary {
-        parser::Primary::Constant(value) => Some(*value),
-        parser::Primary::Paren(expression) => get_expression_constant(expression),
+        parser::Primary::Constant(value) => Some(value.clone()),
+        parser::Primary::Paren(expression) => get_expression_value(&expression.expression),
         _ => None,
     }
 }
@@ -58,8 +58,8 @@ pub enum SemanticError {
     CaseNotWithinSwitch,
     #[error("Non-constant expression found")]
     NonConstantExpression,
-    #[error("Duplicate case value: {0}")]
-    DuplicateCaseValue(String),
+    #[error("Duplicate case value: {0:?}")]
+    DuplicateCaseValue(types::Constant),
     #[error("Duplicate default label")]
     DuplicateDefaultLabel,
     #[error("Function body found in a declaration")]

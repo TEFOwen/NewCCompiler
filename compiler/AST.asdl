@@ -1,7 +1,8 @@
 program = Program(declaration*)
 declaration = FuncDecl(function_declaration) | VarDecl(variable_declaration)
-function_declaration = (identifier name, identifier* params, block? body, storage_class?) 
-variable_declaration = (identifier name, exp? init, storage_class?)
+function_declaration = (identifier name, identifier* params, block? body, type fun_type, storage_class?) 
+variable_declaration = (identifier name, exp? init, type var_type, storage_class?)
+type = Int | Long | FunType(type* params, type ret)
 storage_class = Static | Extern
 block = Block(block_item*)
 block_item = S(statement) | D(declaration)
@@ -21,8 +22,9 @@ statement = Return(exp)
         | Switch(exp, statement body)
         | Null
 for_init = InitDecl(variable_declaration) | InitExp(exp?)
-exp = Constant(int)
+exp = Constant(const)
     | Var(identifier)
+    | Cast(type target_type, exp)
     | Unary(unary_operator, exp)
     | Binary(binary_operator, exp, exp)
     | Assignment(exp, exp)
@@ -33,3 +35,4 @@ binary_operator = Add | Subtract | Multiply | Divide | Remainder
                 | BitAnd | BitOR | BitXor | LeftShift | RightShift
                 | And | Or | Equal | NotEqual
                 | LessThan | LessEqual | GreaterThan | GreaterEqual
+const = ConstInt(int) | ConstLong(int)

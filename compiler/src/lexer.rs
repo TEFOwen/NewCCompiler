@@ -2,6 +2,8 @@ use std::{fmt::Display, io::BufRead};
 
 use thiserror::Error;
 
+use crate::types;
+
 #[derive(Debug, Error)]
 pub enum LexerError {
     #[error("IO error: {0}")]
@@ -18,10 +20,10 @@ pub enum LexerError {
     ParseIntError(std::num::ParseIntError, Location),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TokenType {
     Identifier(String),
-    Constant(u32),
+    Constant(types::Constant),
     Keyword(Keyword),
     Symbol(Symbol),
     EndOfFile,
@@ -45,6 +47,7 @@ pub enum Keyword {
     Default,
     Static,
     Extern,
+    Long,
 }
 
 impl TryFrom<&String> for Keyword {
@@ -68,6 +71,7 @@ impl TryFrom<&String> for Keyword {
             "default" => Ok(Keyword::Default),
             "static" => Ok(Keyword::Static),
             "extern" => Ok(Keyword::Extern),
+            "long" => Ok(Keyword::Long),
             _ => Err(()),
         }
     }
@@ -209,26 +213,27 @@ where
                     column_number += 1;
                 }
 
-                match number.parse::<u32>() {
-                    Ok(value) => tokens.push(Token(
-                        TokenType::Constant(value),
-                        Location {
-                            line: line_number,
-                            start,
-                            end: column_number,
-                        },
-                    )),
-                    Err(e) => {
-                        return Err(LexerError::ParseIntError(
-                            e,
-                            Location {
-                                line: line_number,
-                                start,
-                                end: column_number,
-                            },
-                        ));
-                    }
-                }
+                let location = Location {
+                    line: line_number,
+                    start,
+                    end: column_number,
+                };
+
+                let int_res = number
+                    .parse::<i32>()
+                    .map(types::Constant::Int)
+                    .or_else(|_| {
+                        let number = if number.ends_with('l') || number.ends_with('L') {
+                            &number[..number.len() - 1]
+                        } else {
+                            &number
+                        };
+                        number
+                            .parse::<i64>()
+                            .map(types::Constant::Long)
+                            .map_err(|err| LexerError::ParseIntError(err, location.clone()))
+                    })?;
+                tokens.push(Token(TokenType::Constant(int_res), location));
             } else {
                 let symbol = match c {
                     '(' => Symbol::OpenParen,

@@ -194,6 +194,7 @@ impl ResolveIdentifiers for parser::FuncDeclaration {
                 .map(|body| body.resolve_identifiers(&mut new_resolver))
                 .transpose()?,
             storage_class: self.storage_class,
+            ty: self.ty,
         })
     }
 }
@@ -263,6 +264,7 @@ impl ResolveIdentifiers for parser::VariableDeclaration {
                 .map(|init| init.resolve_identifiers(resolver))
                 .transpose()?,
             storage_class: self.storage_class,
+            ty: self.ty,
         })
     }
 }
@@ -380,6 +382,17 @@ impl ResolveIdentifiers for parser::ForInit {
     }
 }
 
+impl ResolveIdentifiers for parser::TypedExpression {
+    fn resolve_identifiers(self, resolver: &mut IdentifierResolver) -> Result<Self, SemanticError> {
+        self.expression
+            .resolve_identifiers(resolver)
+            .map(|expression| Self {
+                expression,
+                ty: self.ty,
+            })
+    }
+}
+
 impl ResolveIdentifiers for parser::Expression {
     fn resolve_identifiers(self, resolver: &mut IdentifierResolver) -> Result<Self, SemanticError> {
         match self {
@@ -417,18 +430,22 @@ impl ResolveIdentifiers for parser::Factor {
                     parser::UnaryOperator::PrefixIncrement | parser::UnaryOperator::PrefixDecrement
                 ) =>
             {
-                Ok(Self::UnaryOp {
+                Ok(parser::Factor::UnaryOp {
                     op,
                     fac: Box::new(fac.resolve_identifiers(resolver)?),
                 })
             }
-            parser::Factor::UnaryOp { op, fac } => Ok(Self::UnaryOp {
+            parser::Factor::UnaryOp { op, fac } => Ok(parser::Factor::UnaryOp {
                 op,
                 fac: Box::new(fac.resolve_identifiers(resolver)?),
             }),
             parser::Factor::Postfix(postfix) => postfix
                 .resolve_identifiers(resolver)
                 .map(parser::Factor::Postfix),
+            parser::Factor::Cast { ty, fac } => Ok(parser::Factor::Cast {
+                ty,
+                fac: Box::new(fac.resolve_identifiers(resolver)?),
+            }),
         }
     }
 }
